@@ -9,6 +9,7 @@ COM_MAXFPS="250"
 FORCE_CONFIG=0
 CONFIG_FILE_OVERRIDE=""
 DEBUG=0
+GAME_EXES="iw4mp.exe iw4sp.exe iw5mp.exe iw5sp.exe"
 
 # Always stderr, not stdout: several functions' stdout is a data channel
 # (mapfile/command substitution reads addresses from it) that a tagged
@@ -130,7 +131,7 @@ GAME_PID=""
 if [[ $# -gt 0 ]]; then
     "$@" &
     GAME_PID=$!
-    log "Launched game (PID $GAME_PID), waiting for iw4mp.exe/iw4sp.exe..."
+    log "Launched game (PID $GAME_PID), waiting for ${GAME_EXES// //}..."
 fi
 
 STARTED_DAEMON=0
@@ -203,19 +204,25 @@ PID=""
 GAME_EXE=""
 
 if [[ -z "$GAME_PID" ]]; then
-    match=$(pika ps | awk '$2 == "iw4mp.exe" || $2 == "iw4sp.exe" { print $1, $2; exit }')
+    match=$(pika ps | awk -v exes="$GAME_EXES" '
+        BEGIN { n = split(exes, arr, " ") }
+        { for (i = 1; i <= n; i++) if ($2 == arr[i]) { print $1, $2; exit } }
+    ')
     PID="${match%% *}"
     GAME_EXE="${match#* }"
 
     if [[ -z "${PID:-}" ]]; then
-        log "iw4mp.exe/iw4sp.exe is not running."
+        log "${GAME_EXES// //} is not running."
         exit 1
     fi
 
     log "Found $GAME_EXE with PID $PID"
 else
     while :; do
-        match=$(pika ps 2>/dev/null | awk '$2 == "iw4mp.exe" || $2 == "iw4sp.exe" { print $1, $2; exit }') || true
+        match=$(pika ps 2>/dev/null | awk -v exes="$GAME_EXES" '
+            BEGIN { n = split(exes, arr, " ") }
+            { for (i = 1; i <= n; i++) if ($2 == arr[i]) { print $1, $2; exit } }
+        ') || true
         PID="${match%% *}"
         GAME_EXE="${match#* }"
 
@@ -224,7 +231,7 @@ else
         fi
 
         if ! kill -0 "$GAME_PID" 2>/dev/null; then
-            log "Game process exited before iw4mp.exe/iw4sp.exe was detected."
+            log "Game process exited before ${GAME_EXES// //} was detected."
             wait "$GAME_PID" 2>/dev/null
             exit $?
         fi

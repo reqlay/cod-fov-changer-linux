@@ -1,6 +1,6 @@
 # MW2 FOV Changer
 
-Modern Warfare 2 (2009) FOV and FPS changer for Linux using [pika](https://github.com/delfianto/pika). Works against both `iw4mp.exe` (multiplayer) and `iw4sp.exe` (singleplayer).
+FOV and FPS changer for Linux using [pika](https://github.com/delfianto/pika). Works against `iw4mp.exe`/`iw4sp.exe` (Modern Warfare 2, 2009) and `iw5mp.exe`/`iw5sp.exe` (Modern Warfare 3, 2011) - `mp`/`sp` for multiplayer/singleplayer.
 
 ## Requirements
 
@@ -11,7 +11,7 @@ Modern Warfare 2 (2009) FOV and FPS changer for Linux using [pika](https://githu
 
 ## Usage
 
-**Standalone** - run after `iw4mp.exe`/`iw4sp.exe` is already up:
+**Standalone** - run after the game's exe is already up:
 
 ```bash
 ./mw2-fov-changer.sh
@@ -35,9 +35,10 @@ Modern Warfare 2 (2009) FOV and FPS changer for Linux using [pika](https://githu
 
 ## How it works
 
-1. In wrapper mode, starts the script and game then
-   waits for `iw4mp.exe` or `iw4sp.exe` to show up in `pika ps`. In
-   standalone mode, the game needs to already be running.
+1. In wrapper mode, starts the script and game then waits for a
+   supported exe (`iw4mp.exe`/`iw4sp.exe`/`iw5mp.exe`/`iw5sp.exe`) to
+   show up in `pika ps`. In standalone mode, the game needs to already
+   be running.
 2. Starts a `pika serve` daemon at its default socket
    (`/tmp/pika.sock`) if one isn't already reachable there.
 3. Locates `cg_fov`/`cg_fovScale`/`com_maxfps`'s live addresses: uses the
