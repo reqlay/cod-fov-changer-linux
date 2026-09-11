@@ -324,9 +324,12 @@ config_values_plausible() {
 }
 
 # Locates each dvar's address by pattern-scanning memory instead of
-# trusting one tied to a specific build (see AGENTS.md). Only cg_fov's
-# calibration probe can disambiguate multiple pointer candidates, so
-# cg_fovScale/com_maxfps treat any ambiguity as a hard failure rather than guess.
+# trusting one tied to a specific build (see AGENTS.md). A dvar's name
+# string can have an unrelated second copy elsewhere in the module
+# (observed for cg_fov and cg_fovScale in iw4sp.exe), so every candidate
+# gets pooled across all name-string matches and disambiguated by value:
+# cg_fov via a calibration probe for its known factory default, the
+# others by plausibility at the value_offset that calibration finds.
 
 name_to_hex() {
     local name="$1" out="" i
@@ -383,57 +386,57 @@ find_field_pointers_for() {
     done < <(aob_addresses "$(addr_to_le_hex "$1")")
 }
 
-find_dvar_field_candidates() {
+# Pools field-pointer candidates across every name-string match for $1,
+# tolerating a dvar's name string having an unrelated second copy
+# elsewhere in the module (observed for cg_fov and cg_fovScale).
+pool_field_candidates() {
     local name="$1"
-    local -a name_hits ptr_hits
+    local -a name_hits ptr_hits all_hits=()
+    local addr
 
     mapfile -t name_hits < <(find_name_string_candidates "$name")
     debug "'$name' name string: ${#name_hits[@]} match(es) (${name_hits[*]:-none})"
 
-    if [[ "${#name_hits[@]}" -ne 1 ]]; then
-        log "Discovery: expected exactly one '$name' name string, found ${#name_hits[@]}."
-        return 1
-    fi
-
-    mapfile -t ptr_hits < <(find_field_pointers_for "${name_hits[0]}")
-    debug "'$name' field pointer: ${#ptr_hits[@]} candidate(s) (${ptr_hits[*]:-none})"
-
-    if [[ "${#ptr_hits[@]}" -eq 0 ]]; then
-        log "Discovery: no field pointer found for '$name'."
-        return 1
-    fi
-
-    printf '%s\n' "${ptr_hits[@]}"
-}
-
-# cg_fov's calibration probe can disambiguate multiple pointer candidates,
-# so unlike find_dvar_field_candidates it also tolerates multiple name-string
-# matches (observed in iw4sp.exe once a level is loaded) by pooling pointer
-# candidates from every match instead of requiring exactly one.
-find_cg_fov_field_candidates() {
-    local -a name_hits ptr_hits all_hits=()
-    local addr
-
-    mapfile -t name_hits < <(find_name_string_candidates "cg_fov")
-    debug "'cg_fov' name string: ${#name_hits[@]} match(es) (${name_hits[*]:-none})"
-
     if [[ "${#name_hits[@]}" -eq 0 ]]; then
-        log "Discovery: no 'cg_fov' name string found."
+        log "Discovery: no '$name' name string found."
         return 1
     fi
 
     for addr in "${name_hits[@]}"; do
         mapfile -t ptr_hits < <(find_field_pointers_for "$addr")
-        debug "'cg_fov' field pointer for $addr: ${#ptr_hits[@]} candidate(s) (${ptr_hits[*]:-none})"
+        debug "'$name' field pointer for $addr: ${#ptr_hits[@]} candidate(s) (${ptr_hits[*]:-none})"
         all_hits+=("${ptr_hits[@]}")
     done
 
     if [[ "${#all_hits[@]}" -eq 0 ]]; then
-        log "Discovery: no field pointer found for 'cg_fov'."
+        log "Discovery: no field pointer found for '$name'."
         return 1
     fi
 
     printf '%s\n' "${all_hits[@]}"
+}
+
+# Picks whichever pooled candidate for $1 has a plausible current value for
+# $2 (the key is_plausible_value expects) at the already-known $3
+# value_offset - cg_fovScale/com_maxfps have no known factory default to
+# calibrate against like cg_fov does, so plausibility is the disambiguator.
+resolve_dvar_field() {
+    local name="$1" plausibility_key="$2" value_offset="$3"
+    local -a candidates plausible=()
+    local field
+
+    mapfile -t candidates < <(pool_field_candidates "$name") || return 1
+
+    for field in "${candidates[@]}"; do
+        is_plausible_value "$plausibility_key" "$(printf '0x%x' $(( field + value_offset )))" && plausible+=("$field")
+    done
+
+    if [[ "${#plausible[@]}" -ne 1 ]]; then
+        log "Discovery: '$name' has ${#candidates[@]} field candidate(s), ${#plausible[@]} plausible - expected exactly 1."
+        return 1
+    fi
+
+    echo "${plausible[0]}"
 }
 
 # Prints "<field_addr> <value_offset>" for whichever candidate matches.
@@ -458,8 +461,8 @@ calibrate_value_offset() {
 }
 
 discover_dvar_addresses() {
-    local field value_offset
-    local -a fov_candidates fovscale_candidates maxfps_candidates
+    local field value_offset fovscale_field maxfps_field
+    local -a fov_candidates
 
     read -r MODULE_START MODULE_END < <(game_module_range) || {
         log "Discovery: couldn't find $GAME_EXE's own module in memory."
@@ -467,7 +470,7 @@ discover_dvar_addresses() {
     }
     debug "$GAME_EXE module range: $(printf '0x%x-0x%x' "$MODULE_START" "$MODULE_END")"
 
-    mapfile -t fov_candidates < <(find_cg_fov_field_candidates)
+    mapfile -t fov_candidates < <(pool_field_candidates "cg_fov")
     [[ "${#fov_candidates[@]}" -gt 0 ]] || return 1
 
     read -r field value_offset < <(calibrate_value_offset "${fov_candidates[@]}") || {
@@ -477,21 +480,11 @@ discover_dvar_addresses() {
 
     CG_FOV_VALUE=$(printf '0x%x' $(( field + value_offset )))
 
-    mapfile -t fovscale_candidates < <(find_dvar_field_candidates "cg_fovScale")
-    mapfile -t maxfps_candidates < <(find_dvar_field_candidates "com_maxfps")
+    fovscale_field=$(resolve_dvar_field "cg_fovScale" "cg_fovscale" "$value_offset") || return 1
+    maxfps_field=$(resolve_dvar_field "com_maxfps" "com_maxfps" "$value_offset") || return 1
 
-    if [[ "${#fovscale_candidates[@]}" -ne 1 ]]; then
-        log "Discovery: cg_fovScale name pointer found ${#fovscale_candidates[@]} candidates, expected exactly 1."
-        return 1
-    fi
-
-    if [[ "${#maxfps_candidates[@]}" -ne 1 ]]; then
-        log "Discovery: com_maxfps name pointer found ${#maxfps_candidates[@]} candidates, expected exactly 1."
-        return 1
-    fi
-
-    CG_FOVSCALE_VALUE=$(printf '0x%x' $(( fovscale_candidates[0] + value_offset )))
-    COM_MAXFPS_VALUE=$(printf '0x%x' $(( maxfps_candidates[0] + value_offset )))
+    CG_FOVSCALE_VALUE=$(printf '0x%x' $(( fovscale_field + value_offset )))
+    COM_MAXFPS_VALUE=$(printf '0x%x' $(( maxfps_field + value_offset )))
 }
 
 if [[ "$FORCE_CONFIG" -eq 1 ]]; then
