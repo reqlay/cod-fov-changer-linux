@@ -13,7 +13,7 @@ DEBUG=0
 
 # Always stderr, not stdout: several functions' stdout is a data channel
 # (mapfile/command substitution reads addresses from it) that a tagged
-# line would corrupt. The "[mw2-fov" prefix lets --debug's filter exclude noise.
+# line would corrupt. The "[mw2-fov]" prefix lets --debug's filter exclude noise.
 log() {
     echo "[mw2-fov] $*" >&2
 }
@@ -66,7 +66,7 @@ fi
 DEBUG_LOG=""
 DEBUG_TERM_PID=""
 
-# Terminal used for --debug output if stdout isn't a TTY. Picks the first available
+# Terminal used for --debug output if stdout isn't a TTY. Picks the first available.
 pick_terminal() {
     if [[ -n "${TERMINAL:-}" ]] && command -v "$TERMINAL" >/dev/null 2>&1; then
         echo "$TERMINAL"
@@ -152,12 +152,9 @@ pika() { command pika $([[ "$DEBUG" -eq 1 ]] && echo -v) "$@"; }
 if ! pika sessions >/dev/null 2>&1; then
     PIKA_LOG=$(mktemp)
 
-    # `pika()` is a function; backgrounding `pika serve &` forks a subshell
-    # to run its body, and that body's `command pika` runs as a further
-    # child — so $! would name the subshell, not pika. Killing that
-    # subshell (blocked in wait() for its child) orphans the real daemon
-    # rather than stopping it. execing pika directly inside its own
-    # backgrounded subshell instead makes $! genuinely pika's PID.
+    # pika is a function, so pika serve & would background a subshell
+    # running it, making $! name that subshell rather than the pika
+    # process it execs — exec inside the subshell fixes that.
     if [[ "$DEBUG" -eq 1 ]]; then
         ( exec pika -v serve > >(tee -a "$PIKA_LOG" >>"$DEBUG_LOG") 2>&1 ) &
     else
@@ -309,23 +306,10 @@ config_values_plausible() {
     is_plausible_value com_maxfps "$COM_MAXFPS_VALUE"
 }
 
-# --- Dynamic dvar address discovery -------------------------------------
-#
-# Locates each dvar's address instead of trusting one tied to a build
-# (see AGENTS.md for background):
-#   1. AOB-scan for the dvar's ASCII name to find the name string.
-#   2. AOB-scan for an 8-byte pointer to that string, to find the dvar_t
-#      struct field referencing it.
-#   3. For cg_fov only: probe field+0x28..0x3C for its known factory
-#      default (65.0) to calibrate `value_offset`, the byte offset from
-#      that field to the live value — same for every dvar_t struct.
-#   4. Reuse `value_offset` for cg_fovScale/com_maxfps.
-#
-# Step 2 can return multiple candidates (an 8-byte value can
-# coincidentally match elsewhere in memory). cg_fov disambiguates via
-# the calibration probe; the other two dvars, lacking that check, treat
-# an ambiguous match as a hard failure. Every step aborts rather than
-# guessing — writing to a wrong address is worse than not running at all.
+# Locates each dvar's address by pattern-scanning memory instead of
+# trusting one tied to a specific build (see AGENTS.md). Only cg_fov's
+# calibration probe can disambiguate multiple pointer candidates, so
+# cg_fovScale/com_maxfps treat any ambiguity as a hard failure rather than guess.
 
 name_to_hex() {
     local name="$1" out="" i
