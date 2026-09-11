@@ -18,7 +18,8 @@ log() {
 }
 
 debug() {
-    [[ "$DEBUG" -eq 1 ]] && echo "[mw2-fov:debug] $*" >&2
+    [[ "$DEBUG" -eq 1 ]] || return 0
+    echo "[mw2-fov:debug] $*" >&2
 }
 
 while [[ $# -gt 0 ]]; do
