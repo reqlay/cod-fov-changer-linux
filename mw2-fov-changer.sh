@@ -448,10 +448,31 @@ else
 
     if [[ "$USED_CONFIG" -eq 0 ]]; then
         log "Locating dvar addresses..."
-        if ! discover_dvar_addresses; then
-            log "Dynamic address discovery failed."
-            exit 1
-        fi
+
+        # Dvars can be unregistered until the game is past its main menu
+        # (e.g. singleplayer only creates cg_fov's dvar_t once a level is
+        # loaded), so a single discovery attempt right after launch can
+        # find the name string but no dvar_t referencing it yet.
+        DISCOVERY_RETRY_INTERVAL=3
+        DISCOVERY_TIMEOUT=120
+        elapsed=0
+
+        until discover_dvar_addresses; do
+            if ! kill -0 "$PID" 2>/dev/null; then
+                log "Game process exited during discovery."
+                exit 1
+            fi
+
+            elapsed=$(( elapsed + DISCOVERY_RETRY_INTERVAL ))
+            if [[ "$elapsed" -ge "$DISCOVERY_TIMEOUT" ]]; then
+                log "Dynamic address discovery timed out after ${DISCOVERY_TIMEOUT}s."
+                exit 1
+            fi
+
+            log "Retrying in ${DISCOVERY_RETRY_INTERVAL}s (make sure you're past the main menu, in a loaded level/match)..."
+            sleep "$DISCOVERY_RETRY_INTERVAL"
+        done
+
         log "Discovered cg_fov=$CG_FOV_VALUE cg_fovScale=$CG_FOVSCALE_VALUE com_maxfps=$COM_MAXFPS_VALUE"
         save_config
     fi
