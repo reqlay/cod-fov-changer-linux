@@ -23,6 +23,9 @@ Modern Warfare 2 (2009) FOV and FPS changer for Linux using [pika](https://githu
 /path/to/script/mw2-fov-changer.sh --fov 90 --fovscale 1.2 --fps 125 %command%
 ```
 
+`--debug` requires `debug.sh` to be present alongside `mw2-fov-changer.sh`
+(i.e. a full checkout of this repo, not just the standalone script file).
+
 ### Flags
 
 | Flag                 | Controls        | Default |
