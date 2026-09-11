@@ -30,7 +30,6 @@ Modern Warfare 2 (2009) FOV and FPS changer for Linux using [pika](https://githu
 | `--fov`              | `cg_fov`         | `90.0`  |
 | `--fovscale`         | `cg_fovScale`    | `1.0`   |
 | `--fps`              | `com_maxfps`     | `250`   |
-| `--console`          | sets `monkeytoy` to `1` (enables the dev console) - `iw4sp.exe` (singleplayer) only, ignored for `iw4mp.exe` | off |
 | `--force-config`     | use the saved config's addresses directly, with no validity check | off |
 | `--config-file <path>` | read/write the config at this path instead of the default | off |
 
@@ -41,13 +40,12 @@ Modern Warfare 2 (2009) FOV and FPS changer for Linux using [pika](https://githu
    standalone mode, the game needs to already be running.
 2. Starts a `pika serve` daemon at its default socket
    (`/tmp/pika.sock`) if one isn't already reachable there.
-3. Locates `cg_fov`/`cg_fovScale`/`com_maxfps`'s live addresses (plus
-   `monkeytoy`'s when `--console` is active): uses the saved config if
-   one exists and its values still look plausible, otherwise
-   pattern-scans the game's memory (see "Dynamic address discovery"
-   below) and saves the result for next time - unless `--force-config`
-   was passed (see "Saved address config").
-4. Writes each value once via `pika write`.
+3. Locates `cg_fov`/`cg_fovScale`/`com_maxfps`'s live addresses: uses the
+   saved config if one exists and its values still look plausible,
+   otherwise pattern-scans the game's memory (see "Dynamic address
+   discovery" below) and saves the result for next time - unless
+   `--force-config` was passed (see "Saved address config").
+4. Writes all three values once via `pika write`.
 5. Starts a background loop (`correct_dvars`) that polls each value every
    250ms via `pika read` and only re-writes it if it's drifted from the
    target, e.g. the game resets `cg_fov` on death.
@@ -68,11 +66,8 @@ in the process (observed on `iw4sp.exe` once a level is loaded).
    its known default value (`65.0`) to calibrate the byte offset
    from that field to the dvar's live value - the same struct-layout
    offset applies to every dvar, so it's derived once and reused.
-4. Repeats steps 1-2 for `cg_fovScale`/`com_maxfps` (and `monkeytoy` when
-   `--console` is active), pooling candidates across every name-string
-   match instead of requiring exactly one, and keeping whichever
-   candidate reads a plausible current value at the offset from step 3 -
-   these dvars have no known default to calibrate against like `cg_fov`.
+4. Repeats steps 1-2 for `cg_fovScale`/`com_maxfps` and applies the same
+   offset to each.
 
 If discovery fails, it retries every 3 seconds for up to 2 minutes before
 giving up - dvars can be unregistered until you're past the main menu
@@ -87,10 +82,9 @@ under a section named for the running binary (e.g. `[iw4mp.exe]`,
 `[iw4sp.exe]`), so mp and sp addresses never overwrite each other:
 
 - **Default**: if the config has a section for the current binary and all
-  addresses in it (including `monkeytoy`'s if `--console` is active) read
-  back a plausible value for their dvar (`config_values_plausible`, e.g.
-  `cg_fov` between 1 and 180), use them directly, skipping discovery.
-  Otherwise (missing, incomplete, or a value
+  three addresses in it read back a plausible value for their dvar
+  (`config_values_plausible`, e.g. `cg_fov` between 1 and 180), use them
+  directly, skipping discovery. Otherwise (missing, incomplete, or a value
   out of range) fall back to full discovery as normal, and save the fresh
   result on success.
 - **`--force-config`**: use the saved config directly with no validity

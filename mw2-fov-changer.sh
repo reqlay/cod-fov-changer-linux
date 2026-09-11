@@ -6,11 +6,9 @@ set -euo pipefail
 CG_FOV="90.0"
 CG_FOVSCALE="1.0"
 COM_MAXFPS="250"
-MONKEYTOY=1
 FORCE_CONFIG=0
 CONFIG_FILE_OVERRIDE=""
 DEBUG=0
-ENABLE_CONSOLE=0
 
 # Always stderr, not stdout: several functions' stdout is a data channel
 # (mapfile/command substitution reads addresses from it) that a tagged
@@ -48,10 +46,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --debug)
             DEBUG=1
-            shift
-            ;;
-        --console)
-            ENABLE_CONSOLE=1
             shift
             ;;
         *)
@@ -244,15 +238,6 @@ else
     sleep 5
 fi
 
-CONSOLE_ACTIVE=0
-if [[ "$ENABLE_CONSOLE" -eq 1 ]]; then
-    if [[ "$GAME_EXE" == "iw4sp.exe" ]]; then
-        CONSOLE_ACTIVE=1
-    else
-        log "--console only applies to iw4sp.exe (singleplayer); ignoring for $GAME_EXE."
-    fi
-fi
-
 CONFIG_FILE="${CONFIG_FILE_OVERRIDE:-${XDG_CONFIG_HOME:-$HOME/.config}/mw2-fov-changer.conf}"
 
 # Config sections are keyed by process name (e.g. "[iw4mp.exe]") so one
@@ -268,12 +253,11 @@ config_section() {
 load_config() {
     [[ -f "$CONFIG_FILE" ]] || return 1
 
-    CG_FOV_VALUE="" CG_FOVSCALE_VALUE="" COM_MAXFPS_VALUE="" MONKEYTOY_VALUE=""
+    CG_FOV_VALUE="" CG_FOVSCALE_VALUE="" COM_MAXFPS_VALUE=""
     # shellcheck disable=SC1090
     source <(config_section) 2>/dev/null || return 1
 
-    [[ -n "$CG_FOV_VALUE" && -n "$CG_FOVSCALE_VALUE" && -n "$COM_MAXFPS_VALUE" ]] || return 1
-    [[ "$CONSOLE_ACTIVE" -eq 0 || -n "$MONKEYTOY_VALUE" ]]
+    [[ -n "$CG_FOV_VALUE" && -n "$CG_FOVSCALE_VALUE" && -n "$COM_MAXFPS_VALUE" ]]
 }
 
 # Only call after a verified discover_dvar_addresses success — not after
@@ -297,7 +281,6 @@ save_config() {
         echo "CG_FOV_VALUE=$CG_FOV_VALUE"
         echo "CG_FOVSCALE_VALUE=$CG_FOVSCALE_VALUE"
         echo "COM_MAXFPS_VALUE=$COM_MAXFPS_VALUE"
-        [[ "$CONSOLE_ACTIVE" -eq 1 ]] && echo "MONKEYTOY_VALUE=$MONKEYTOY_VALUE"
     } >> "$tmp"
 
     mv "$tmp" "$CONFIG_FILE"
@@ -321,7 +304,7 @@ config_addresses_readable() {
 is_plausible_value() {
     local dvar="$1" addr="$2" dtype="f32" val
 
-    [[ "$dvar" == "com_maxfps" || "$dvar" == "monkeytoy" ]] && dtype="i32"
+    [[ "$dvar" == "com_maxfps" ]] && dtype="i32"
 
     val=$(pika read "$PID" "$addr" -l 4 --json 2>/dev/null | jq -r ".interpretations.${dtype} // empty") || return 1
     [[ -n "$val" ]] || return 1
@@ -330,7 +313,6 @@ is_plausible_value() {
         cg_fov)      awk -v v="$val" 'BEGIN { exit !(v >= 1 && v <= 180) }' ;;
         cg_fovscale) awk -v v="$val" 'BEGIN { exit !(v >= 0.2 && v <= 2) }' ;;
         com_maxfps)  awk -v v="$val" 'BEGIN { exit !(v >= 0 && v <= 1000) }' ;;
-        monkeytoy)   awk -v v="$val" 'BEGIN { exit !(v == 0 || v == 1) }' ;;
         *)           return 1 ;;
     esac
 }
@@ -338,8 +320,7 @@ is_plausible_value() {
 config_values_plausible() {
     is_plausible_value cg_fov "$CG_FOV_VALUE" &&
     is_plausible_value cg_fovscale "$CG_FOVSCALE_VALUE" &&
-    is_plausible_value com_maxfps "$COM_MAXFPS_VALUE" &&
-    { [[ "$CONSOLE_ACTIVE" -eq 0 ]] || is_plausible_value monkeytoy "$MONKEYTOY_VALUE"; }
+    is_plausible_value com_maxfps "$COM_MAXFPS_VALUE"
 }
 
 # Locates each dvar's address by pattern-scanning memory instead of
@@ -480,7 +461,7 @@ calibrate_value_offset() {
 }
 
 discover_dvar_addresses() {
-    local field value_offset fovscale_field maxfps_field monkeytoy_field
+    local field value_offset fovscale_field maxfps_field
     local -a fov_candidates
 
     read -r MODULE_START MODULE_END < <(game_module_range) || {
@@ -504,18 +485,6 @@ discover_dvar_addresses() {
 
     CG_FOVSCALE_VALUE=$(printf '0x%x' $(( fovscale_field + value_offset )))
     COM_MAXFPS_VALUE=$(printf '0x%x' $(( maxfps_field + value_offset )))
-
-    if [[ "$CONSOLE_ACTIVE" -eq 1 ]]; then
-        monkeytoy_field=$(resolve_dvar_field "monkeytoy" "monkeytoy" "$value_offset") || return 1
-        MONKEYTOY_VALUE=$(printf '0x%x' $(( monkeytoy_field + value_offset )))
-    fi
-}
-
-# Empty unless --console is active for iw4sp.exe, so callers can append
-# it to a log line without a separate branch for the console-off case.
-monkeytoy_log_suffix() {
-    [[ "$CONSOLE_ACTIVE" -eq 1 ]] && echo " monkeytoy=$MONKEYTOY_VALUE"
-    return 0
 }
 
 if [[ "$FORCE_CONFIG" -eq 1 ]]; then
@@ -524,14 +493,14 @@ if [[ "$FORCE_CONFIG" -eq 1 ]]; then
         exit 1
     fi
     log "Using addresses from config (--force-config, unverified):" \
-        "cg_fov=$CG_FOV_VALUE cg_fovScale=$CG_FOVSCALE_VALUE com_maxfps=$COM_MAXFPS_VALUE$(monkeytoy_log_suffix)"
+        "cg_fov=$CG_FOV_VALUE cg_fovScale=$CG_FOVSCALE_VALUE com_maxfps=$COM_MAXFPS_VALUE"
 else
     USED_CONFIG=0
 
     if load_config && config_values_plausible; then
         USED_CONFIG=1
         log "Using saved addresses from $CONFIG_FILE:" \
-            "cg_fov=$CG_FOV_VALUE cg_fovScale=$CG_FOVSCALE_VALUE com_maxfps=$COM_MAXFPS_VALUE$(monkeytoy_log_suffix)"
+            "cg_fov=$CG_FOV_VALUE cg_fovScale=$CG_FOVSCALE_VALUE com_maxfps=$COM_MAXFPS_VALUE"
     fi
 
     if [[ "$USED_CONFIG" -eq 0 ]]; then
@@ -561,7 +530,7 @@ else
             sleep "$DISCOVERY_RETRY_INTERVAL"
         done
 
-        log "Discovered cg_fov=$CG_FOV_VALUE cg_fovScale=$CG_FOVSCALE_VALUE com_maxfps=$COM_MAXFPS_VALUE$(monkeytoy_log_suffix)"
+        log "Discovered cg_fov=$CG_FOV_VALUE cg_fovScale=$CG_FOVSCALE_VALUE com_maxfps=$COM_MAXFPS_VALUE"
         save_config
     fi
 fi
@@ -575,8 +544,7 @@ correct_dvars() {
         for entry in \
             "$CG_FOV_VALUE:$CG_FOV:f32" \
             "$CG_FOVSCALE_VALUE:$CG_FOVSCALE:f32" \
-            "$COM_MAXFPS_VALUE:$COM_MAXFPS:i32" \
-            $([[ "$CONSOLE_ACTIVE" -eq 1 ]] && echo "$MONKEYTOY_VALUE:$MONKEYTOY:i32"); do
+            "$COM_MAXFPS_VALUE:$COM_MAXFPS:i32"; do
             addr="${entry%%:*}"
             rest="${entry#*:}"
             target="${rest%%:*}"
@@ -609,9 +577,6 @@ correct_dvars() {
 pika write --dtype f32 "$PID" "$CG_FOV_VALUE" "$CG_FOV"
 pika write --dtype f32 "$PID" "$CG_FOVSCALE_VALUE" "$CG_FOVSCALE"
 pika write --dtype i32 "$PID" "$COM_MAXFPS_VALUE" "$COM_MAXFPS"
-if [[ "$CONSOLE_ACTIVE" -eq 1 ]]; then
-    pika write --dtype i32 "$PID" "$MONKEYTOY_VALUE" "$MONKEYTOY"
-fi
 
 correct_dvars &
 CORRECTOR_PID=$!
@@ -619,9 +584,6 @@ CORRECTOR_PID=$!
 log "Set cg_fov      = $CG_FOV at $CG_FOV_VALUE"
 log "Set cg_fovScale = $CG_FOVSCALE at $CG_FOVSCALE_VALUE"
 log "Set com_maxfps  = $COM_MAXFPS at $COM_MAXFPS_VALUE"
-if [[ "$CONSOLE_ACTIVE" -eq 1 ]]; then
-    log "Set monkeytoy   = $MONKEYTOY at $MONKEYTOY_VALUE"
-fi
 
 while is_game_running; do
     sleep 1
