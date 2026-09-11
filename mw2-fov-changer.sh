@@ -353,13 +353,21 @@ aob_addresses() {
     jq -r '.addresses[]' <<<"$hits" 2>/dev/null
 }
 
+# Name string constants live in read-only memory (.rdata/.rodata),
+# which pika's aob scan excludes unless told otherwise.
+find_name_string_candidates() {
+    aob_addresses "$(name_to_hex "$1")" --include-readonly
+}
+
+find_field_pointers_for() {
+    aob_addresses "$(addr_to_le_hex "$1")"
+}
+
 find_dvar_field_candidates() {
-    local name="$1" ptr_pattern
+    local name="$1"
     local -a name_hits ptr_hits
 
-    # Name string constants live in read-only memory (.rdata/.rodata),
-    # which pika's aob scan excludes unless told otherwise.
-    mapfile -t name_hits < <(aob_addresses "$(name_to_hex "$name")" --include-readonly)
+    mapfile -t name_hits < <(find_name_string_candidates "$name")
     debug "'$name' name string: ${#name_hits[@]} match(es) (${name_hits[*]:-none})"
 
     if [[ "${#name_hits[@]}" -ne 1 ]]; then
@@ -367,16 +375,45 @@ find_dvar_field_candidates() {
         return 1
     fi
 
-    ptr_pattern=$(addr_to_le_hex "${name_hits[0]}")
-    mapfile -t ptr_hits < <(aob_addresses "$ptr_pattern")
+    mapfile -t ptr_hits < <(find_field_pointers_for "${name_hits[0]}")
     debug "'$name' field pointer: ${#ptr_hits[@]} candidate(s) (${ptr_hits[*]:-none})"
 
-    # printf with an empty array still prints one blank line, which the
-    # caller's mapfile would count as a single (bogus, empty) candidate —
-    # bypassing the "-ne 1 candidates" check that's supposed to catch this.
-    if [[ "${#ptr_hits[@]}" -gt 0 ]]; then
-        printf '%s\n' "${ptr_hits[@]}"
+    if [[ "${#ptr_hits[@]}" -eq 0 ]]; then
+        log "Discovery: no field pointer found for '$name'."
+        return 1
     fi
+
+    printf '%s\n' "${ptr_hits[@]}"
+}
+
+# cg_fov's calibration probe can disambiguate multiple pointer candidates,
+# so unlike find_dvar_field_candidates it also tolerates multiple name-string
+# matches (observed in iw4sp.exe once a level is loaded) by pooling pointer
+# candidates from every match instead of requiring exactly one.
+find_cg_fov_field_candidates() {
+    local -a name_hits ptr_hits all_hits=()
+    local addr
+
+    mapfile -t name_hits < <(find_name_string_candidates "cg_fov")
+    debug "'cg_fov' name string: ${#name_hits[@]} match(es) (${name_hits[*]:-none})"
+
+    if [[ "${#name_hits[@]}" -eq 0 ]]; then
+        log "Discovery: no 'cg_fov' name string found."
+        return 1
+    fi
+
+    for addr in "${name_hits[@]}"; do
+        mapfile -t ptr_hits < <(find_field_pointers_for "$addr")
+        debug "'cg_fov' field pointer for $addr: ${#ptr_hits[@]} candidate(s) (${ptr_hits[*]:-none})"
+        all_hits+=("${ptr_hits[@]}")
+    done
+
+    if [[ "${#all_hits[@]}" -eq 0 ]]; then
+        log "Discovery: no field pointer found for 'cg_fov'."
+        return 1
+    fi
+
+    printf '%s\n' "${all_hits[@]}"
 }
 
 # Prints "<field_addr> <value_offset>" for whichever candidate matches.
@@ -404,7 +441,8 @@ discover_dvar_addresses() {
     local field value_offset
     local -a fov_candidates fovscale_candidates maxfps_candidates
 
-    mapfile -t fov_candidates < <(find_dvar_field_candidates "cg_fov") || return 1
+    mapfile -t fov_candidates < <(find_cg_fov_field_candidates)
+    [[ "${#fov_candidates[@]}" -gt 0 ]] || return 1
 
     read -r field value_offset < <(calibrate_value_offset "${fov_candidates[@]}") || {
         log "Discovery: couldn't calibrate cg_fov's value offset (no candidate held 65.0 in the expected window)."
@@ -413,8 +451,8 @@ discover_dvar_addresses() {
 
     CG_FOV_VALUE=$(printf '0x%x' $(( field + value_offset )))
 
-    mapfile -t fovscale_candidates < <(find_dvar_field_candidates "cg_fovScale") || return 1
-    mapfile -t maxfps_candidates < <(find_dvar_field_candidates "com_maxfps") || return 1
+    mapfile -t fovscale_candidates < <(find_dvar_field_candidates "cg_fovScale")
+    mapfile -t maxfps_candidates < <(find_dvar_field_candidates "com_maxfps")
 
     if [[ "${#fovscale_candidates[@]}" -ne 1 ]]; then
         log "Discovery: cg_fovScale name pointer found ${#fovscale_candidates[@]} candidates, expected exactly 1."
