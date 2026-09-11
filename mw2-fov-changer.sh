@@ -553,7 +553,16 @@ correct_dvars() {
             current=$(pika read "$PID" "$addr" -l 4 --json 2>/dev/null | jq -r ".interpretations.${dtype} // empty" 2>/dev/null) || true
 
             if [[ -n "$current" ]]; then
-                differs=$(awk -v a="$current" -v b="$target" 'BEGIN { print (a != b) }')
+                # f32 read back and widened to f64 for JSON rarely round-trips
+                # to the exact decimal typed in (e.g. 1.2 reads back as
+                # 1.2000000476837158), so float dvars compare with a
+                # tolerance instead of exact equality.
+                if [[ "$dtype" == "f32" ]]; then
+                    differs=$(awk -v a="$current" -v b="$target" 'BEGIN { d = a - b; if (d < 0) d = -d; print (d > 0.001) }')
+                else
+                    differs=$(awk -v a="$current" -v b="$target" 'BEGIN { print (a != b) }')
+                fi
+
                 if [[ "$differs" -eq 1 ]]; then
                     debug "$addr drifted ($current -> $target), rewriting"
                     pika write --dtype "$dtype" "$PID" "$addr" "$target" >/dev/null
