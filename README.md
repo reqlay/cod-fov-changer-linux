@@ -52,6 +52,12 @@ Modern Warfare 2 (2009) FOV and FPS changer for Linux using [pika](https://githu
 
 ## Dynamic address discovery
 
+Scans are restricted to memory mapped from the game's own exe file (via
+`pika maps`), excluding other loaded modules - the same restriction
+[CoD-FoV-Changers](https://github.com/AgentRev/CoD-FoV-Changers) uses,
+needed because a dvar's name string can have a duplicate copy elsewhere
+in the process (observed on `iw4sp.exe` once a level is loaded).
+
 1. AOB-scans process memory for the dvar's ASCII name (e.g. `"cg_fov\0"`)
    to find where the name string itself lives.
 2. AOB-scans for an 8-byte pointer value equal to that address, to find
