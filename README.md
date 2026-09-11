@@ -1,6 +1,6 @@
 # MW2 FOV Changer
 
-Modern Warfare 2 - Multiplayer (2009) FOV and FPS changer for Linux using [pika](https://github.com/delfianto/pika).
+Modern Warfare 2 (2009) FOV and FPS changer for Linux using [pika](https://github.com/delfianto/pika). Works against both `iw4mp.exe` (multiplayer) and `iw4sp.exe` (singleplayer).
 
 ## Requirements
 
@@ -11,7 +11,7 @@ Modern Warfare 2 - Multiplayer (2009) FOV and FPS changer for Linux using [pika]
 
 ## Usage
 
-**Standalone** - run after `iw4mp.exe` is already up:
+**Standalone** - run after `iw4mp.exe`/`iw4sp.exe` is already up:
 
 ```bash
 ./mw2-fov-changer.sh
@@ -30,26 +30,21 @@ Modern Warfare 2 - Multiplayer (2009) FOV and FPS changer for Linux using [pika]
 | `--fov`              | `cg_fov`         | `90.0`  |
 | `--fovscale`         | `cg_fovScale`    | `1.0`   |
 | `--fps`              | `com_maxfps`     | `250`   |
-| `--legacy-addresses` | skip config and discovery, use the last-known hardcoded addresses | off |
 | `--force-config`     | use the saved config's addresses directly, with no validity check | off |
 | `--config-file <path>` | read/write the config at this path instead of the default | off |
-
-`--legacy-addresses` and `--force-config` are mutually exclusive, using
-both results in an error.
 
 ## How it works
 
 1. In wrapper mode, starts the script and game then
-   waits for `iw4mp.exe` to show up in `pika ps`. In standalone mode,
-   the game needs to already be running.
+   waits for `iw4mp.exe` or `iw4sp.exe` to show up in `pika ps`. In
+   standalone mode, the game needs to already be running.
 2. Starts a `pika serve` daemon at its default socket
    (`/tmp/pika.sock`) if one isn't already reachable there.
 3. Locates `cg_fov`/`cg_fovScale`/`com_maxfps`'s live addresses: uses the
    saved config if one exists and its values still look plausible,
    otherwise pattern-scans the game's memory (see "Dynamic address
    discovery" below) and saves the result for next time - unless
-   `--legacy-addresses` or `--force-config` was passed (see "Saved
-   address config").
+   `--force-config` was passed (see "Saved address config").
 4. Writes all three values once via `pika write`.
 5. Starts a background loop (`correct_dvars`) that polls each value every
    250ms via `pika read` and only re-writes it if it's drifted from the
@@ -72,14 +67,16 @@ both results in an error.
 
 Once discovery succeeds, the resolved addresses are saved to 
 `${XDG_CONFIG_HOME:-$HOME/.config}/mw2-fov-changer.conf` overridable with `--config-file <path>` 
-and reused on subsequent runs instead of re-scanning:
+and reused on subsequent runs instead of re-scanning. Addresses are stored
+under a section named for the running binary (e.g. `[iw4mp.exe]`,
+`[iw4sp.exe]`), so mp and sp addresses never overwrite each other:
 
-- **Default**: if the config exists and all three addresses read back a
-  plausible value for their dvar (`config_values_plausible`, e.g.
-  `cg_fov` between 1 and 180), use them directly, skipping discovery.
-  Otherwise (missing, incomplete, or a value out of range) fall back to
-  full discovery as normal, and save the fresh result on success.
+- **Default**: if the config has a section for the current binary and all
+  three addresses in it read back a plausible value for their dvar
+  (`config_values_plausible`, e.g. `cg_fov` between 1 and 180), use them
+  directly, skipping discovery. Otherwise (missing, incomplete, or a value
+  out of range) fall back to full discovery as normal, and save the fresh
+  result on success.
 - **`--force-config`**: use the saved config directly with no validity
-  check at all - errors out if there's no usable config yet. 
-- **`--legacy-addresses`**: Uses the original hardcoded addresses. Never
-  reads or writes the config file.
+  check at all - errors out if there's no usable section for the current
+  binary yet.

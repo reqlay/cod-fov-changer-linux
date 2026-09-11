@@ -6,7 +6,6 @@ set -euo pipefail
 CG_FOV="90.0"
 CG_FOVSCALE="1.0"
 COM_MAXFPS="250"
-USE_LEGACY_ADDRESSES=0
 FORCE_CONFIG=0
 CONFIG_FILE_OVERRIDE=""
 DEBUG=0
@@ -36,10 +35,6 @@ while [[ $# -gt 0 ]]; do
             COM_MAXFPS="$2"
             shift 2
             ;;
-        --legacy-addresses)
-            USE_LEGACY_ADDRESSES=1
-            shift
-            ;;
         --force-config)
             FORCE_CONFIG=1
             shift
@@ -57,11 +52,6 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
-
-if [[ "$USE_LEGACY_ADDRESSES" -eq 1 && "$FORCE_CONFIG" -eq 1 ]]; then
-    log "Error: --legacy-addresses and --force-config are mutually exclusive."
-    exit 1
-fi
 
 DEBUG_LOG=""
 DEBUG_TERM_PID=""
@@ -139,7 +129,7 @@ GAME_PID=""
 if [[ $# -gt 0 ]]; then
     "$@" &
     GAME_PID=$!
-    log "Launched game (PID $GAME_PID), waiting for iw4mp.exe..."
+    log "Launched game (PID $GAME_PID), waiting for iw4mp.exe/iw4sp.exe..."
 fi
 
 STARTED_DAEMON=0
@@ -209,26 +199,31 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 PID=""
+GAME_EXE=""
 
 if [[ -z "$GAME_PID" ]]; then
-    PID=$(pika ps | awk '$2 == "iw4mp.exe" { print $1; exit }')
+    match=$(pika ps | awk '$2 == "iw4mp.exe" || $2 == "iw4sp.exe" { print $1, $2; exit }')
+    PID="${match%% *}"
+    GAME_EXE="${match#* }"
 
     if [[ -z "${PID:-}" ]]; then
-        log "iw4mp.exe is not running."
+        log "iw4mp.exe/iw4sp.exe is not running."
         exit 1
     fi
 
-    log "Found iw4mp.exe with PID $PID"
+    log "Found $GAME_EXE with PID $PID"
 else
     while :; do
-        PID=$(pika ps 2>/dev/null | awk '$2 == "iw4mp.exe" { print $1; exit }') || true
+        match=$(pika ps 2>/dev/null | awk '$2 == "iw4mp.exe" || $2 == "iw4sp.exe" { print $1, $2; exit }') || true
+        PID="${match%% *}"
+        GAME_EXE="${match#* }"
 
         if [[ -n "$PID" ]]; then
             break
         fi
 
         if ! kill -0 "$GAME_PID" 2>/dev/null; then
-            log "Game process exited before iw4mp.exe was detected."
+            log "Game process exited before iw4mp.exe/iw4sp.exe was detected."
             wait "$GAME_PID" 2>/dev/null
             exit $?
         fi
@@ -236,38 +231,59 @@ else
         sleep 1
     done
 
-    log "Found iw4mp.exe with PID $PID"
+    log "Found $GAME_EXE with PID $PID"
 
     # Sleeping for 5 seconds to let the game finish loading
     sleep 5
 fi
 
-LEGACY_CG_FOV_VALUE="0x146698330"
-LEGACY_CG_FOVSCALE_VALUE="0x1466848F0"
-LEGACY_COM_MAXFPS_VALUE="0x146681A70"
-
 CONFIG_FILE="${CONFIG_FILE_OVERRIDE:-${XDG_CONFIG_HOME:-$HOME/.config}/mw2-fov-changer.conf}"
+
+# Config sections are keyed by process name (e.g. "[iw4mp.exe]") so one
+# file can hold addresses for multiple binaries/games without collision.
+config_section() {
+    awk -v exe="$GAME_EXE" '
+        $0 == "[" exe "]" { found=1; next }
+        /^\[/ { found=0 }
+        found { print }
+    ' "$CONFIG_FILE"
+}
 
 load_config() {
     [[ -f "$CONFIG_FILE" ]] || return 1
 
     CG_FOV_VALUE="" CG_FOVSCALE_VALUE="" COM_MAXFPS_VALUE=""
     # shellcheck disable=SC1090
-    source "$CONFIG_FILE" 2>/dev/null || return 1
+    source <(config_section) 2>/dev/null || return 1
 
     [[ -n "$CG_FOV_VALUE" && -n "$CG_FOVSCALE_VALUE" && -n "$COM_MAXFPS_VALUE" ]]
 }
 
 # Only call after a verified discover_dvar_addresses success — not after
-# --legacy-addresses or --force-config, which don't confirm this build's address.
+# --force-config, which doesn't confirm this build's address.
 save_config() {
     mkdir -p "$(dirname "$CONFIG_FILE")"
+
+    local tmp
+    tmp=$(mktemp)
+
+    if [[ -f "$CONFIG_FILE" ]]; then
+        awk -v exe="$GAME_EXE" '
+            $0 == "[" exe "]" { skip=1; next }
+            /^\[/ { skip=0 }
+            !skip { print }
+        ' "$CONFIG_FILE" > "$tmp"
+    fi
+
     {
+        echo "[$GAME_EXE]"
         echo "CG_FOV_VALUE=$CG_FOV_VALUE"
         echo "CG_FOVSCALE_VALUE=$CG_FOVSCALE_VALUE"
         echo "COM_MAXFPS_VALUE=$COM_MAXFPS_VALUE"
-    } > "$CONFIG_FILE"
-    log "Saved discovered addresses to $CONFIG_FILE"
+    } >> "$tmp"
+
+    mv "$tmp" "$CONFIG_FILE"
+    log "Saved discovered addresses to $CONFIG_FILE (section [$GAME_EXE])"
 }
 
 # Not currently called (see config_values_plausible below, the active
@@ -413,14 +429,9 @@ discover_dvar_addresses() {
     COM_MAXFPS_VALUE=$(printf '0x%x' $(( maxfps_candidates[0] + value_offset )))
 }
 
-if [[ "$USE_LEGACY_ADDRESSES" -eq 1 ]]; then
-    CG_FOV_VALUE="$LEGACY_CG_FOV_VALUE"
-    CG_FOVSCALE_VALUE="$LEGACY_CG_FOVSCALE_VALUE"
-    COM_MAXFPS_VALUE="$LEGACY_COM_MAXFPS_VALUE"
-    log "Using legacy hardcoded addresses (--legacy-addresses)."
-elif [[ "$FORCE_CONFIG" -eq 1 ]]; then
+if [[ "$FORCE_CONFIG" -eq 1 ]]; then
     if ! load_config; then
-        log "Error: --force-config given but no usable config at $CONFIG_FILE."
+        log "Error: --force-config given but no usable [$GAME_EXE] section in $CONFIG_FILE."
         exit 1
     fi
     log "Using addresses from config (--force-config, unverified):" \
@@ -437,10 +448,7 @@ else
     if [[ "$USED_CONFIG" -eq 0 ]]; then
         log "Locating dvar addresses..."
         if ! discover_dvar_addresses; then
-            log "Dynamic address discovery failed. Not falling back to legacy addresses" \
-                "automatically, since they may be stale and writing to the wrong address" \
-                "can crash the game."
-            log "Re-run with --legacy-addresses to force the last-known addresses, at your own risk."
+            log "Dynamic address discovery failed."
             exit 1
         fi
         log "Discovered cg_fov=$CG_FOV_VALUE cg_fovScale=$CG_FOVSCALE_VALUE com_maxfps=$COM_MAXFPS_VALUE"
@@ -448,12 +456,12 @@ else
     fi
 fi
 
-is_iw4mp_running() {
-    pika ps 2>/dev/null | awk -v pid="$PID" '$1 == pid && $2 == "iw4mp.exe" { found=1 } END { exit !found }'
+is_game_running() {
+    pika ps 2>/dev/null | awk -v pid="$PID" -v exe="$GAME_EXE" '$1 == pid && $2 == exe { found=1 } END { exit !found }'
 }
 
 correct_dvars() {
-    while is_iw4mp_running; do
+    while is_game_running; do
         for entry in \
             "$CG_FOV_VALUE:$CG_FOV:f32" \
             "$CG_FOVSCALE_VALUE:$CG_FOVSCALE:f32" \
@@ -489,11 +497,11 @@ log "Set cg_fov      = $CG_FOV at $CG_FOV_VALUE"
 log "Set cg_fovScale = $CG_FOVSCALE at $CG_FOVSCALE_VALUE"
 log "Set com_maxfps  = $COM_MAXFPS at $COM_MAXFPS_VALUE"
 
-while is_iw4mp_running; do
+while is_game_running; do
     sleep 1
 done
 
-log "iw4mp.exe exited."
+log "$GAME_EXE exited."
 
 if [[ -n "$DEBUG_TERM_PID" ]]; then
     kill "$DEBUG_TERM_PID" 2>/dev/null || true
