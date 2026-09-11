@@ -281,9 +281,9 @@ config_addresses_readable() {
     return 0
 }
 
-# A wrong address can still read successfully — confirmed in practice: a
-# manually-corrupted config with addresses that read fine but weren't
-# actually the right dvars crashed the game once correct_dvars wrote to them.
+# A wrong address can still read successfully  
+# a manually-corrupted config with addresses that read fine but weren't
+# actually the right dvars can crash the game once correct_dvars are written.
 is_plausible_value() {
     local dvar="$1" addr="$2" dtype="f32" val
 
@@ -293,9 +293,9 @@ is_plausible_value() {
     [[ -n "$val" ]] || return 1
 
     case "$dvar" in
-        cg_fov)      awk -v v="$val" 'BEGIN { exit !(v >= 1 && v <= 300) }' ;;
-        cg_fovscale) awk -v v="$val" 'BEGIN { exit !(v >= 0.1 && v <= 10) }' ;;
-        com_maxfps)  awk -v v="$val" 'BEGIN { exit !(v >= 1 && v <= 10000) }' ;;
+        cg_fov)      awk -v v="$val" 'BEGIN { exit !(v >= 1 && v <= 180) }' ;;
+        cg_fovscale) awk -v v="$val" 'BEGIN { exit !(v >= 0.2 && v <= 2) }' ;;
+        com_maxfps)  awk -v v="$val" 'BEGIN { exit !(v >= 0 && v <= 1000) }' ;;
         *)           return 1 ;;
     esac
 }

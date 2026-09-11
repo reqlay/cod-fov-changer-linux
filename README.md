@@ -57,8 +57,6 @@ both results in an error.
 
 ## Dynamic address discovery
 
-The three dvar addresses are located when :
-
 1. AOB-scans process memory for the dvar's ASCII name (e.g. `"cg_fov\0"`)
    to find where the name string itself lives.
 2. AOB-scans for an 8-byte pointer value equal to that address, to find
@@ -73,13 +71,12 @@ The three dvar addresses are located when :
 ## Config
 
 Once discovery succeeds, the resolved addresses are saved to 
-`${XDG_CONFIG_HOME:-$HOME/.config}/mw2-fov-changer.conf` 
-(a plain `KEY=value` file, overridable with `--config-file <path>`) 
+`${XDG_CONFIG_HOME:-$HOME/.config}/mw2-fov-changer.conf` overridable with `--config-file <path>` 
 and reused on subsequent runs instead of re-scanning:
 
 - **Default**: if the config exists and all three addresses read back a
   plausible value for their dvar (`config_values_plausible`, e.g.
-  `cg_fov` between 1 and 300), use them directly, skipping discovery.
+  `cg_fov` between 1 and 180), use them directly, skipping discovery.
   Otherwise (missing, incomplete, or a value out of range) fall back to
   full discovery as normal, and save the fresh result on success.
 - **`--force-config`**: use the saved config directly with no validity
