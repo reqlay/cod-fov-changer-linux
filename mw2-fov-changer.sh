@@ -353,14 +353,34 @@ aob_addresses() {
     jq -r '.addresses[]' <<<"$hits" 2>/dev/null
 }
 
+# Prints "<start> <end>" spanning every mapped region backed by the game's
+# own exe file, so scans can exclude a duplicate string/pointer elsewhere in
+# the process (e.g. a separate module only loaded once a level is loaded) —
+# same restriction CoD-FoV-Changers uses (github.com/AgentRev/CoD-FoV-Changers).
+game_module_range() {
+    pika maps "$PID" --json 2>/dev/null | jq -r --arg exe "$GAME_EXE" '
+        [.[] | select((.pathname | ascii_downcase) | endswith($exe | ascii_downcase))]
+        | select(length > 0)
+        | "\(map(.start) | min) \(map(.end) | max)"
+    '
+}
+
 # Name string constants live in read-only memory (.rdata/.rodata),
-# which pika's aob scan excludes unless told otherwise.
+# which pika's aob scan excludes unless told otherwise. Filtered to
+# MODULE_START/MODULE_END (see game_module_range) to exclude the same
+# string appearing in a different module.
 find_name_string_candidates() {
-    aob_addresses "$(name_to_hex "$1")" --include-readonly
+    local addr
+    while read -r addr; do
+        (( addr >= MODULE_START && addr < MODULE_END )) && echo "$addr"
+    done < <(aob_addresses "$(name_to_hex "$1")" --include-readonly)
 }
 
 find_field_pointers_for() {
-    aob_addresses "$(addr_to_le_hex "$1")"
+    local addr
+    while read -r addr; do
+        (( addr >= MODULE_START && addr < MODULE_END )) && echo "$addr"
+    done < <(aob_addresses "$(addr_to_le_hex "$1")")
 }
 
 find_dvar_field_candidates() {
@@ -440,6 +460,12 @@ calibrate_value_offset() {
 discover_dvar_addresses() {
     local field value_offset
     local -a fov_candidates fovscale_candidates maxfps_candidates
+
+    read -r MODULE_START MODULE_END < <(game_module_range) || {
+        log "Discovery: couldn't find $GAME_EXE's own module in memory."
+        return 1
+    }
+    debug "$GAME_EXE module range: $(printf '0x%x-0x%x' "$MODULE_START" "$MODULE_END")"
 
     mapfile -t fov_candidates < <(find_cg_fov_field_candidates)
     [[ "${#fov_candidates[@]}" -gt 0 ]] || return 1
