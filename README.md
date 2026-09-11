@@ -1,0 +1,88 @@
+# MW2 FOV Changer
+
+Modern Warfare 2 - Multiplayer (2009) FOV and FPS changer for Linux using [pika](https://github.com/delfianto/pika).
+
+## Requirements
+
+- Linux, with the game running under Wine/Proton
+- [`pika`](https://github.com/delfianto/pika) installed and on `PATH`
+- `jq` (used to parse `pika read --json` output)
+- `bash`
+
+## Usage
+
+**Standalone** - run after `iw4mp.exe` is already up:
+
+```bash
+./mw2-fov-changer.sh
+```
+
+**Wrapper** - use in launch options:
+
+```
+/path/to/script/mw2-fov-changer.sh --fov 90 --fovscale 1.2 --fps 125 %command%
+```
+
+### Flags
+
+| Flag                 | Controls        | Default |
+|----------------------|------------------|---------|
+| `--fov`              | `cg_fov`         | `90.0`  |
+| `--fovscale`         | `cg_fovScale`    | `1.0`   |
+| `--fps`              | `com_maxfps`     | `250`   |
+| `--legacy-addresses` | skip config and discovery, use the last-known hardcoded addresses | off |
+| `--force-config`     | use the saved config's addresses directly, with no validity check | off |
+| `--config-file <path>` | read/write the config at this path instead of the default | off |
+
+`--legacy-addresses` and `--force-config` are mutually exclusive, using
+both results in an error.
+
+## How it works
+
+1. In wrapper mode, starts the script and game then
+   waits for `iw4mp.exe` to show up in `pika ps`. In standalone mode,
+   the game needs to already be running.
+2. Starts a `pika serve` daemon at its default socket
+   (`/tmp/pika.sock`) if one isn't already reachable there.
+3. Locates `cg_fov`/`cg_fovScale`/`com_maxfps`'s live addresses: uses the
+   saved config if one exists and its values still look plausible,
+   otherwise pattern-scans the game's memory (see "Dynamic address
+   discovery" below) and saves the result for next time - unless
+   `--legacy-addresses` or `--force-config` was passed (see "Saved
+   address config").
+4. Writes all three values once via `pika write`.
+5. Starts a background loop (`correct_dvars`) that polls each value every
+   250ms via `pika read` and only re-writes it if it's drifted from the
+   target, e.g. the game resets `cg_fov` on death.
+
+## Dynamic address discovery
+
+The three dvar addresses are located when :
+
+1. AOB-scans process memory for the dvar's ASCII name (e.g. `"cg_fov\0"`)
+   to find where the name string itself lives.
+2. AOB-scans for an 8-byte pointer value equal to that address, to find
+   the `dvar_t` struct field that references it.
+3. For `cg_fov` only: probes a small offset window from that field for
+   its known default value (`65.0`) to calibrate the byte offset
+   from that field to the dvar's live value - the same struct-layout
+   offset applies to every dvar, so it's derived once and reused.
+4. Repeats steps 1-2 for `cg_fovScale`/`com_maxfps` and applies the same
+   offset to each.
+
+## Config
+
+Once discovery succeeds, the resolved addresses are saved to 
+`${XDG_CONFIG_HOME:-$HOME/.config}/mw2-fov-changer.conf` 
+(a plain `KEY=value` file, overridable with `--config-file <path>`) 
+and reused on subsequent runs instead of re-scanning:
+
+- **Default**: if the config exists and all three addresses read back a
+  plausible value for their dvar (`config_values_plausible`, e.g.
+  `cg_fov` between 1 and 300), use them directly, skipping discovery.
+  Otherwise (missing, incomplete, or a value out of range) fall back to
+  full discovery as normal, and save the fresh result on success.
+- **`--force-config`**: use the saved config directly with no validity
+  check at all - errors out if there's no usable config yet. 
+- **`--legacy-addresses`**: Uses the original hardcoded addresses. Never
+  reads or writes the config file.
