@@ -15,7 +15,7 @@ Currently works on MW2 (2009) and MW3 (2011). For both single- and multiplayer.
 **Standalone** - run after the game's exe is already up:
 
 ```bash
-./cod-fov-changer.sh
+./cod-fov-changer.sh --fov 110 --fps 333
 ```
 
 **Wrapper** - use in launch options:
