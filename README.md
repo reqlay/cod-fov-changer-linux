@@ -64,9 +64,7 @@ Scans are restricted to memory mapped from the game's own process via `pika maps
 4. Repeats steps 1-2 for `cg_fovScale`/`com_maxfps` and applies the same
    offset to each.
 
-If discovery fails, it retries every 3 seconds for up to 2 minutes before
-giving up - dvars can be unregistered until you're past the main menu
-(e.g. `iw4sp.exe` only creates `cg_fov`'s `dvar_t` once a level is loaded).
+If discovery fails, it retries every 3 seconds for up to 2 minutes before giving up.
 
 ## Config
 
