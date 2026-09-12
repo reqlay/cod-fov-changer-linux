@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sourced by mw2-fov-changer.sh when --debug is passed. Not meant to run standalone.
+# Sourced by cod-fov-changer.sh when --debug is passed. Not meant to run standalone.
 
 # Terminal used for --debug output if stdout isn't a TTY. Picks the first available.
 pick_terminal() {
@@ -27,9 +27,16 @@ pick_terminal() {
     return 1
 }
 
-# LD_LIBRARY_PATH is cleared for the launched terminal: Steam points it
-# at its own bundled runtime libs for the game's benefit, which shadowed
-# a system lib konsole needed and broke its startup.
+DEBUG_TERM_UNIT=""
+
+# Runs the terminal as a systemd --user service instead of a plain background
+# job: Steam attributes any descendant of the launched wrapper PID to the
+# game (confirmed via its own "Adding process <pid> for gameID" logging), so
+# a plain child here gets tracked as part of the game and can be caught up in
+# Steam's overlay/IPC bookkeeping for it. `systemd-run --user` (no --scope)
+# hands the process to the user's systemd instance as its parent instead,
+# which also sidesteps the LD_LIBRARY_PATH problem below since that manager's
+# environment never inherits Steam's runtime override in the first place.
 open_terminal() {
     local term="$1" cmd="$2"
     local -a argv
@@ -43,25 +50,35 @@ open_terminal() {
         *)                 argv=("$term" -e bash -c "$cmd") ;;
     esac
 
-    ( unset LD_LIBRARY_PATH; exec "${argv[@]}" ) &
+    if command -v systemd-run >/dev/null 2>&1; then
+        DEBUG_TERM_UNIT="cod-fov-changer-debug-$$"
+        systemd-run --user --unit="$DEBUG_TERM_UNIT" --collect --quiet -- "${argv[@]}"
+    else
+        # Fallback for non-systemd setups: stays a child of this script, so
+        # Steam's process scan still attributes it to the game.
+        # LD_LIBRARY_PATH is cleared here: Steam points it at its own bundled
+        # runtime libs for the game's benefit, which shadowed a system lib
+        # konsole needed and broke its startup.
+        ( unset LD_LIBRARY_PATH; exec "${argv[@]}" ) &
+        DEBUG_TERM_PID=$!
+    fi
 }
 
 # Redirects the caller's stdout/stderr into DEBUG_LOG, and if stdout isn't a
-# TTY (e.g. launched via Steam), spawns a terminal tailing that log. Sets
-# DEBUG_LOG and DEBUG_TERM_PID for the caller.
+# TTY and a game command was given (wrapper mode), spawns a terminal tailing
+# that log. Sets DEBUG_LOG and DEBUG_TERM_UNIT/DEBUG_TERM_PID for the caller.
 start_debug_output() {
-    DEBUG_LOG="${XDG_RUNTIME_DIR:-/tmp}/mw2-fov-changer-debug.log"
+    DEBUG_LOG="${XDG_RUNTIME_DIR:-/tmp}/cod-fov-changer-debug.log"
     {
         log "DISPLAY=${DISPLAY:-<unset>} WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-<unset>}" \
             "XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-<unset>} XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-<unset>}"
 
-        if [[ ! -t 1 ]]; then
+        if [[ ! -t 1 && $# -gt 0 ]]; then
             DEBUG_TERM_APP=$(pick_terminal) || DEBUG_TERM_APP=""
 
             if [[ -n "$DEBUG_TERM_APP" ]]; then
                 open_terminal "$DEBUG_TERM_APP" \
-                    "tail -f '$DEBUG_LOG' | grep --line-buffered -E '^\[mw2-fov|(WARN|ERROR).*pika'" >>"$DEBUG_LOG" 2>&1
-                DEBUG_TERM_PID=$!
+                    "tail -f '$DEBUG_LOG' | grep --line-buffered -E '^\[cod-fov|(WARN|ERROR).*pika'" >>"$DEBUG_LOG" 2>&1
             else
                 log "No terminal emulator found for --debug; check $DEBUG_LOG manually."
             fi
@@ -70,4 +87,14 @@ start_debug_output() {
 
     exec > >(tee -a "$DEBUG_LOG") 2>&1
     log "Debug log: $DEBUG_LOG"
+}
+
+# Closes whichever form the debug terminal took: a systemd-run unit, or the
+# plain background job from the non-systemd fallback.
+stop_debug_terminal() {
+    if [[ -n "$DEBUG_TERM_UNIT" ]]; then
+        systemctl --user stop "$DEBUG_TERM_UNIT.service" >/dev/null 2>&1 || true
+    elif [[ -n "$DEBUG_TERM_PID" ]]; then
+        kill "$DEBUG_TERM_PID" 2>/dev/null || true
+    fi
 }

@@ -9,17 +9,18 @@ COM_MAXFPS="250"
 FORCE_CONFIG=0
 CONFIG_FILE_OVERRIDE=""
 DEBUG=0
+GAME_EXES="iw4mp.exe iw4sp.exe iw5mp.exe iw5sp.exe"
 
 # Always stderr, not stdout: several functions' stdout is a data channel
 # (mapfile/command substitution reads addresses from it) that a tagged
-# line would corrupt. The "[mw2-fov]" prefix lets --debug's filter exclude noise.
+# line would corrupt. The "[cod-fov]" prefix lets --debug's filter exclude noise.
 log() {
-    echo "[mw2-fov] $*" >&2
+    echo "[cod-fov] $*" >&2
 }
 
 debug() {
     [[ "$DEBUG" -eq 1 ]] || return 0
-    echo "[mw2-fov:debug] $*" >&2
+    echo "[cod-fov:debug] $*" >&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -59,7 +60,7 @@ DEBUG_TERM_PID=""
 
 if [[ "$DEBUG" -eq 1 ]]; then
     source "$(dirname "${BASH_SOURCE[0]}")/debug.sh"
-    start_debug_output
+    start_debug_output "$@"
 fi
 
 GAME_PID=""
@@ -67,7 +68,7 @@ GAME_PID=""
 if [[ $# -gt 0 ]]; then
     "$@" &
     GAME_PID=$!
-    log "Launched game (PID $GAME_PID), waiting for iw4mp.exe/iw4sp.exe..."
+    log "Launched game (PID $GAME_PID), waiting for ${GAME_EXES// //}..."
 fi
 
 STARTED_DAEMON=0
@@ -140,19 +141,25 @@ PID=""
 GAME_EXE=""
 
 if [[ -z "$GAME_PID" ]]; then
-    match=$(pika ps | awk '$2 == "iw4mp.exe" || $2 == "iw4sp.exe" { print $1, $2; exit }')
+    match=$(pika ps | awk -v exes="$GAME_EXES" '
+        BEGIN { n = split(exes, arr, " ") }
+        { for (i = 1; i <= n; i++) if ($2 == arr[i]) { print $1, $2; exit } }
+    ')
     PID="${match%% *}"
     GAME_EXE="${match#* }"
 
     if [[ -z "${PID:-}" ]]; then
-        log "iw4mp.exe/iw4sp.exe is not running."
+        log "${GAME_EXES// //} is not running."
         exit 1
     fi
 
     log "Found $GAME_EXE with PID $PID"
 else
     while :; do
-        match=$(pika ps 2>/dev/null | awk '$2 == "iw4mp.exe" || $2 == "iw4sp.exe" { print $1, $2; exit }') || true
+        match=$(pika ps 2>/dev/null | awk -v exes="$GAME_EXES" '
+            BEGIN { n = split(exes, arr, " ") }
+            { for (i = 1; i <= n; i++) if ($2 == arr[i]) { print $1, $2; exit } }
+        ') || true
         PID="${match%% *}"
         GAME_EXE="${match#* }"
 
@@ -161,7 +168,7 @@ else
         fi
 
         if ! kill -0 "$GAME_PID" 2>/dev/null; then
-            log "Game process exited before iw4mp.exe/iw4sp.exe was detected."
+            log "Game process exited before ${GAME_EXES// //} was detected."
             wait "$GAME_PID" 2>/dev/null
             exit $?
         fi
@@ -171,11 +178,11 @@ else
 
     log "Found $GAME_EXE with PID $PID"
 
-    # Sleeping for 5 seconds to let the game finish loading
+    # Sleeping for 5 seconds to let the game finish loading.
     sleep 5
 fi
 
-CONFIG_FILE="${CONFIG_FILE_OVERRIDE:-${XDG_CONFIG_HOME:-$HOME/.config}/mw2-fov-changer.conf}"
+CONFIG_FILE="${CONFIG_FILE_OVERRIDE:-${XDG_CONFIG_HOME:-$HOME/.config}/cod-fov-changer.conf}"
 
 # Config sections are keyed by process name (e.g. "[iw4mp.exe]") so one
 # file can hold addresses for multiple binaries/games without collision.
@@ -260,10 +267,8 @@ config_values_plausible() {
     is_plausible_value com_maxfps "$COM_MAXFPS_VALUE"
 }
 
-# Locates each dvar's address by pattern-scanning memory instead of
-# trusting one tied to a specific build (see AGENTS.md). Only cg_fov's
-# calibration probe can disambiguate multiple pointer candidates, so
-# cg_fovScale/com_maxfps treat any ambiguity as a hard failure rather than guess.
+# Locates each dvar's address by pattern-scanning memory 
+# for the name string, then scanning for a pointer to check it's plausability.
 
 name_to_hex() {
     local name="$1" out="" i
@@ -290,30 +295,86 @@ aob_addresses() {
     jq -r '.addresses[]' <<<"$hits" 2>/dev/null
 }
 
-find_dvar_field_candidates() {
-    local name="$1" ptr_pattern
-    local -a name_hits ptr_hits
+# Prints "<start> <end>" spanning every mapped region backed by the game's
+# own exe file, so scans can exclude a duplicate string/pointer elsewhere in
+# the process (e.g. a separate module only loaded once a level is loaded)
+game_module_range() {
+    pika maps "$PID" --json 2>/dev/null | jq -r --arg exe "$GAME_EXE" '
+        [.[] | select((.pathname | ascii_downcase) | endswith($exe | ascii_downcase))]
+        | select(length > 0)
+        | "\(map(.start) | min) \(map(.end) | max)"
+    '
+}
 
-    # Name string constants live in read-only memory (.rdata/.rodata),
-    # which pika's aob scan excludes unless told otherwise.
-    mapfile -t name_hits < <(aob_addresses "$(name_to_hex "$name")" --include-readonly)
+# Name string constants live in read-only memory (.rdata/.rodata),
+# which pika's aob scan excludes unless told otherwise. Filtered to
+# MODULE_START/MODULE_END (see game_module_range) to exclude the same
+# string appearing in a different module.
+find_name_string_candidates() {
+    local addr
+    while read -r addr; do
+        (( addr >= MODULE_START && addr < MODULE_END )) && echo "$addr"
+    done < <(aob_addresses "$(name_to_hex "$1")" --include-readonly)
+}
+
+find_field_pointers_for() {
+    local addr
+    while read -r addr; do
+        (( addr >= MODULE_START && addr < MODULE_END )) && echo "$addr"
+    done < <(aob_addresses "$(addr_to_le_hex "$1")")
+}
+
+# Pools field-pointer candidates across every name-string match for $1,
+# tolerating a dvar's name string having an unrelated second copy
+# elsewhere in the module (observed for cg_fov and cg_fovScale).
+pool_field_candidates() {
+    local name="$1"
+    local -a name_hits ptr_hits all_hits=()
+    local addr
+
+    mapfile -t name_hits < <(find_name_string_candidates "$name")
     debug "'$name' name string: ${#name_hits[@]} match(es) (${name_hits[*]:-none})"
 
-    if [[ "${#name_hits[@]}" -ne 1 ]]; then
-        log "Discovery: expected exactly one '$name' name string, found ${#name_hits[@]}."
+    if [[ "${#name_hits[@]}" -eq 0 ]]; then
+        log "Discovery: no '$name' name string found."
         return 1
     fi
 
-    ptr_pattern=$(addr_to_le_hex "${name_hits[0]}")
-    mapfile -t ptr_hits < <(aob_addresses "$ptr_pattern")
-    debug "'$name' field pointer: ${#ptr_hits[@]} candidate(s) (${ptr_hits[*]:-none})"
+    for addr in "${name_hits[@]}"; do
+        mapfile -t ptr_hits < <(find_field_pointers_for "$addr")
+        debug "'$name' field pointer for $addr: ${#ptr_hits[@]} candidate(s) (${ptr_hits[*]:-none})"
+        all_hits+=("${ptr_hits[@]}")
+    done
 
-    # printf with an empty array still prints one blank line, which the
-    # caller's mapfile would count as a single (bogus, empty) candidate —
-    # bypassing the "-ne 1 candidates" check that's supposed to catch this.
-    if [[ "${#ptr_hits[@]}" -gt 0 ]]; then
-        printf '%s\n' "${ptr_hits[@]}"
+    if [[ "${#all_hits[@]}" -eq 0 ]]; then
+        log "Discovery: no field pointer found for '$name'."
+        return 1
     fi
+
+    printf '%s\n' "${all_hits[@]}"
+}
+
+# Picks whichever pooled candidate for $1 has a plausible current value for
+# $2 (the key is_plausible_value expects) at the already-known $3
+# value_offset - cg_fovScale/com_maxfps have no known factory default to
+# calibrate against like cg_fov does, so plausibility is the disambiguator.
+resolve_dvar_field() {
+    local name="$1" plausibility_key="$2" value_offset="$3"
+    local -a candidates plausible=()
+    local field
+
+    mapfile -t candidates < <(pool_field_candidates "$name") || return 1
+
+    for field in "${candidates[@]}"; do
+        is_plausible_value "$plausibility_key" "$(printf '0x%x' $(( field + value_offset )))" && plausible+=("$field")
+    done
+
+    if [[ "${#plausible[@]}" -ne 1 ]]; then
+        log "Discovery: '$name' has ${#candidates[@]} field candidate(s), ${#plausible[@]} plausible - expected exactly 1."
+        return 1
+    fi
+
+    echo "${plausible[0]}"
 }
 
 # Prints "<field_addr> <value_offset>" for whichever candidate matches.
@@ -338,10 +399,17 @@ calibrate_value_offset() {
 }
 
 discover_dvar_addresses() {
-    local field value_offset
-    local -a fov_candidates fovscale_candidates maxfps_candidates
+    local field value_offset fovscale_field maxfps_field
+    local -a fov_candidates
 
-    mapfile -t fov_candidates < <(find_dvar_field_candidates "cg_fov") || return 1
+    read -r MODULE_START MODULE_END < <(game_module_range) || {
+        log "Discovery: couldn't find $GAME_EXE's own module in memory."
+        return 1
+    }
+    debug "$GAME_EXE module range: $(printf '0x%x-0x%x' "$MODULE_START" "$MODULE_END")"
+
+    mapfile -t fov_candidates < <(pool_field_candidates "cg_fov")
+    [[ "${#fov_candidates[@]}" -gt 0 ]] || return 1
 
     read -r field value_offset < <(calibrate_value_offset "${fov_candidates[@]}") || {
         log "Discovery: couldn't calibrate cg_fov's value offset (no candidate held 65.0 in the expected window)."
@@ -350,21 +418,11 @@ discover_dvar_addresses() {
 
     CG_FOV_VALUE=$(printf '0x%x' $(( field + value_offset )))
 
-    mapfile -t fovscale_candidates < <(find_dvar_field_candidates "cg_fovScale") || return 1
-    mapfile -t maxfps_candidates < <(find_dvar_field_candidates "com_maxfps") || return 1
+    fovscale_field=$(resolve_dvar_field "cg_fovScale" "cg_fovscale" "$value_offset") || return 1
+    maxfps_field=$(resolve_dvar_field "com_maxfps" "com_maxfps" "$value_offset") || return 1
 
-    if [[ "${#fovscale_candidates[@]}" -ne 1 ]]; then
-        log "Discovery: cg_fovScale name pointer found ${#fovscale_candidates[@]} candidates, expected exactly 1."
-        return 1
-    fi
-
-    if [[ "${#maxfps_candidates[@]}" -ne 1 ]]; then
-        log "Discovery: com_maxfps name pointer found ${#maxfps_candidates[@]} candidates, expected exactly 1."
-        return 1
-    fi
-
-    CG_FOVSCALE_VALUE=$(printf '0x%x' $(( fovscale_candidates[0] + value_offset )))
-    COM_MAXFPS_VALUE=$(printf '0x%x' $(( maxfps_candidates[0] + value_offset )))
+    CG_FOVSCALE_VALUE=$(printf '0x%x' $(( fovscale_field + value_offset )))
+    COM_MAXFPS_VALUE=$(printf '0x%x' $(( maxfps_field + value_offset )))
 }
 
 if [[ "$FORCE_CONFIG" -eq 1 ]]; then
@@ -385,10 +443,31 @@ else
 
     if [[ "$USED_CONFIG" -eq 0 ]]; then
         log "Locating dvar addresses..."
-        if ! discover_dvar_addresses; then
-            log "Dynamic address discovery failed."
-            exit 1
-        fi
+
+        # Dvars can be unregistered until the game is past its main menu
+        # (e.g. singleplayer only creates cg_fov's dvar_t once a level is
+        # loaded), so a single discovery attempt right after launch can
+        # find the name string but no dvar_t referencing it yet.
+        DISCOVERY_RETRY_INTERVAL=3
+        DISCOVERY_TIMEOUT=120
+        elapsed=0
+
+        until discover_dvar_addresses; do
+            if ! kill -0 "$PID" 2>/dev/null; then
+                log "Game process exited during discovery."
+                exit 1
+            fi
+
+            elapsed=$(( elapsed + DISCOVERY_RETRY_INTERVAL ))
+            if [[ "$elapsed" -ge "$DISCOVERY_TIMEOUT" ]]; then
+                log "Dynamic address discovery timed out after ${DISCOVERY_TIMEOUT}s."
+                exit 1
+            fi
+
+            log "Retrying in ${DISCOVERY_RETRY_INTERVAL}s (make sure you're past the main menu, in a loaded level/match)..."
+            sleep "$DISCOVERY_RETRY_INTERVAL"
+        done
+
         log "Discovered cg_fov=$CG_FOV_VALUE cg_fovScale=$CG_FOVSCALE_VALUE com_maxfps=$COM_MAXFPS_VALUE"
         save_config
     fi
@@ -412,7 +491,16 @@ correct_dvars() {
             current=$(pika read "$PID" "$addr" -l 4 --json 2>/dev/null | jq -r ".interpretations.${dtype} // empty" 2>/dev/null) || true
 
             if [[ -n "$current" ]]; then
-                differs=$(awk -v a="$current" -v b="$target" 'BEGIN { print (a != b) }')
+                # f32 read back and widened to f64 for JSON rarely round-trips
+                # to the exact decimal typed in (e.g. 1.2 reads back as
+                # 1.2000000476837158), so float dvars compare with a
+                # tolerance instead of exact equality.
+                if [[ "$dtype" == "f32" ]]; then
+                    differs=$(awk -v a="$current" -v b="$target" 'BEGIN { d = a - b; if (d < 0) d = -d; print (d > 0.001) }')
+                else
+                    differs=$(awk -v a="$current" -v b="$target" 'BEGIN { print (a != b) }')
+                fi
+
                 if [[ "$differs" -eq 1 ]]; then
                     debug "$addr drifted ($current -> $target), rewriting"
                     pika write --dtype "$dtype" "$PID" "$addr" "$target" >/dev/null
@@ -441,8 +529,8 @@ done
 
 log "$GAME_EXE exited."
 
-if [[ -n "$DEBUG_TERM_PID" ]]; then
-    kill "$DEBUG_TERM_PID" 2>/dev/null || true
+if [[ "$DEBUG" -eq 1 ]]; then
+    stop_debug_terminal
 fi
 
 if [[ -n "$GAME_PID" ]]; then

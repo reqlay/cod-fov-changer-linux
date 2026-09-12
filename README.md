@@ -1,6 +1,7 @@
-# MW2 FOV Changer
+# COD FOV Changer
 
-Modern Warfare 2 (2009) FOV and FPS changer for Linux using [pika](https://github.com/delfianto/pika). Works against both `iw4mp.exe` (multiplayer) and `iw4sp.exe` (singleplayer).
+Call of Duty FOV and FPS changer for Linux using [pika](https://github.com/delfianto/pika). 
+Currently works on MW2 (2009) and MW3 (2011). For both single- and multiplayer.
 
 ## Requirements
 
@@ -11,19 +12,19 @@ Modern Warfare 2 (2009) FOV and FPS changer for Linux using [pika](https://githu
 
 ## Usage
 
-**Standalone** - run after `iw4mp.exe`/`iw4sp.exe` is already up:
+**Standalone** - run after the game's exe is already up:
 
 ```bash
-./mw2-fov-changer.sh
+./cod-fov-changer.sh
 ```
 
 **Wrapper** - use in launch options:
 
 ```
-/path/to/script/mw2-fov-changer.sh --fov 90 --fovscale 1.2 --fps 125 %command%
+/path/to/script/cod-fov-changer.sh --fov 90 --fovscale 1.2 --fps 125 %command%
 ```
 
-`--debug` requires `debug.sh` to be present alongside `mw2-fov-changer.sh`
+`--debug` requires `debug.sh` to be present alongside `cod-fov-changer.sh`
 (i.e. a full checkout of this repo, not just the standalone script file).
 
 ### Flags
@@ -38,9 +39,8 @@ Modern Warfare 2 (2009) FOV and FPS changer for Linux using [pika](https://githu
 
 ## How it works
 
-1. In wrapper mode, starts the script and game then
-   waits for `iw4mp.exe` or `iw4sp.exe` to show up in `pika ps`. In
-   standalone mode, the game needs to already be running.
+1. In wrapper mode, starts the script with the game then waits for it to show up in `pika ps`. 
+   In standalone mode, the game needs to already be running.
 2. Starts a `pika serve` daemon at its default socket
    (`/tmp/pika.sock`) if one isn't already reachable there.
 3. Locates `cg_fov`/`cg_fovScale`/`com_maxfps`'s live addresses: uses the
@@ -50,12 +50,13 @@ Modern Warfare 2 (2009) FOV and FPS changer for Linux using [pika](https://githu
    `--force-config` was passed (see "Saved address config").
 4. Writes all three values once via `pika write`.
 5. Starts a background loop (`correct_dvars`) that polls each value every
-   250ms via `pika read` and only re-writes it if it's drifted from the
-   target, e.g. the game resets `cg_fov` on death.
+   250ms via `pika read` and only re-writes it if has drifted from the target.
 
 ## Dynamic address discovery
 
-1. AOB-scans process memory for the dvar's ASCII name (e.g. `"cg_fov\0"`)
+Scans are restricted to memory mapped from the game's own process via `pika maps`.
+
+1. AOB-scans process memory for the dvar's ASCII name (e.g. `cg_fov`)
    to find where the name string itself lives.
 2. AOB-scans for an 8-byte pointer value equal to that address, to find
    the `dvar_t` struct field that references it.
@@ -66,13 +67,13 @@ Modern Warfare 2 (2009) FOV and FPS changer for Linux using [pika](https://githu
 4. Repeats steps 1-2 for `cg_fovScale`/`com_maxfps` and applies the same
    offset to each.
 
+If discovery fails, it retries every 3 seconds for up to 2 minutes before giving up.
+
 ## Config
 
-Once discovery succeeds, the resolved addresses are saved to 
-`${XDG_CONFIG_HOME:-$HOME/.config}/mw2-fov-changer.conf` overridable with `--config-file <path>` 
-and reused on subsequent runs instead of re-scanning. Addresses are stored
-under a section named for the running binary (e.g. `[iw4mp.exe]`,
-`[iw4sp.exe]`), so mp and sp addresses never overwrite each other:
+Once addresses are found they are saved to 
+`${XDG_CONFIG_HOME:-$HOME/.config}/cod-fov-changer.conf` overridable with `--config-file <path>` 
+and reused on subsequent runs instead of re-scanning.
 
 - **Default**: if the config has a section for the current binary and all
   three addresses in it read back a plausible value for their dvar
