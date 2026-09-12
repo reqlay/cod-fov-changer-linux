@@ -24,6 +24,9 @@ Currently works on MW2 (2009) and MW3 (2011). For both single- and multiplayer.
 /path/to/script/cod-fov-changer.sh --fov 90 --fovscale 1.2 --fps 125 %command%
 ```
 
+`--debug` requires `debug.sh` to be present alongside `cod-fov-changer.sh`
+(i.e. a full checkout of this repo, not just the standalone script file).
+
 ### Flags
 
 | Flag                 | Controls        | Default |
@@ -63,9 +66,7 @@ Scans are restricted to memory mapped from the game's own process via `pika maps
 4. Repeats steps 1-2 for `cg_fovScale`/`com_maxfps` and applies the same
    offset to each.
 
-If discovery fails, it retries every 3 seconds for up to 2 minutes before
-giving up - dvars can be unregistered until you're past the main menu
-(e.g. `iw4sp.exe` only creates `cg_fov`'s `dvar_t` once a level is loaded).
+If discovery fails, it retries every 3 seconds for up to 2 minutes before giving up.
 
 ## Config
 
