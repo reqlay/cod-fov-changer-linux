@@ -81,9 +81,7 @@ pika() { command pika $([[ "$DEBUG" -eq 1 ]] && echo -v) "$@"; }
 if ! pika sessions >/dev/null 2>&1; then
     PIKA_LOG=$(mktemp)
 
-    # pika is a function, so pika serve & would background a subshell
-    # running it, making $! name that subshell rather than the pika
-    # process it execs — exec inside the subshell fixes that.
+    # exec here so $! below names the pika process itself, not the subshell.
     if [[ "$DEBUG" -eq 1 ]]; then
         ( exec pika -v serve > >(tee -a "$PIKA_LOG" >>"$DEBUG_LOG") 2>&1 ) &
     else
@@ -127,10 +125,6 @@ cleanup() {
     if [[ -n "$PIKA_LOG" ]]; then
         rm -f "$PIKA_LOG"
     fi
-
-    # Debug terminal is closed explicitly on normal exit (below), not here —
-    # this runs on every exit, and a window that vanishes with the error is
-    # useless for reading it.
 }
 
 trap cleanup EXIT
@@ -204,8 +198,8 @@ load_config() {
     [[ -n "$CG_FOV_VALUE" && -n "$CG_FOVSCALE_VALUE" && -n "$COM_MAXFPS_VALUE" ]]
 }
 
-# Only call after a verified discover_dvar_addresses success — not after
-# --force-config, which doesn't confirm this build's address.
+# Only call after a verified discover_dvar_addresses success,
+# not after --force-config, which doesn't confirm this build's address.
 save_config() {
     mkdir -p "$(dirname "$CONFIG_FILE")"
 
@@ -229,17 +223,6 @@ save_config() {
 
     mv "$tmp" "$CONFIG_FILE"
     log "Saved discovered addresses to $CONFIG_FILE (section [$GAME_EXE])"
-}
-
-# Not currently called (see config_values_plausible below, the active
-# check) — kept as a faster, less-strict fallback if that one ever
-# proves too slow or too strict in practice.
-config_addresses_readable() {
-    local addr
-    for addr in "$CG_FOV_VALUE" "$CG_FOVSCALE_VALUE" "$COM_MAXFPS_VALUE"; do
-        pika read "$PID" "$addr" -l 4 --json >/dev/null 2>&1 || return 1
-    done
-    return 0
 }
 
 # A wrong address can still read successfully
@@ -267,9 +250,8 @@ config_values_plausible() {
     is_plausible_value com_maxfps "$COM_MAXFPS_VALUE"
 }
 
-# Locates each dvar's address by pattern-scanning memory 
-# for the name string, then scanning for a pointer to check it's plausability.
-
+# Locates each dvar's address by pattern-scanning memory
+# for the name string, then scanning for a pointer to check it's plausibility.
 name_to_hex() {
     local name="$1" out="" i
     for ((i = 0; i < ${#name}; i++)); do
@@ -494,6 +476,8 @@ done
 
 log "$GAME_EXE exited."
 
+# Not in cleanup(): that runs on every exit including errors, and a window
+# that vanishes along with the error is useless for reading it.
 if [[ "$DEBUG" -eq 1 ]]; then
     stop_debug_terminal
 fi
