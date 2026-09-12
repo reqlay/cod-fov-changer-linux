@@ -137,7 +137,7 @@ fi
 STARTED_DAEMON=0
 PIKA_PID=""
 PIKA_LOG=""
-CORRECTOR_PID=""
+FROZEN_ADDRS=()
 
 pika() { command pika $([[ "$DEBUG" -eq 1 ]] && echo -v) "$@"; }
 
@@ -177,10 +177,10 @@ if ! pika sessions >/dev/null 2>&1; then
 fi
 
 cleanup() {
-    if [[ -n "$CORRECTOR_PID" ]]; then
-        kill "$CORRECTOR_PID" 2>/dev/null || true
-        wait "$CORRECTOR_PID" 2>/dev/null || true
-    fi
+    local addr
+    for addr in "${FROZEN_ADDRS[@]}"; do
+        pika unfreeze "$addr" >/dev/null 2>&1 || true
+    done
 
     if [[ "$STARTED_DAEMON" -eq 1 && -n "$PIKA_PID" ]]; then
         kill "$PIKA_PID" 2>/dev/null || true
@@ -305,9 +305,9 @@ config_addresses_readable() {
     return 0
 }
 
-# A wrong address can still read successfully  
+# A wrong address can still read successfully
 # a manually-corrupted config with addresses that read fine but weren't
-# actually the right dvars can crash the game once correct_dvars are written.
+# actually the right dvars can crash the game once the dvar values are frozen.
 is_plausible_value() {
     local dvar="$1" addr="$2" dtype="f32" val
 
@@ -540,47 +540,12 @@ is_game_running() {
     pika ps 2>/dev/null | awk -v pid="$PID" -v exe="$GAME_EXE" '$1 == pid && $2 == exe { found=1 } END { exit !found }'
 }
 
-correct_dvars() {
-    while is_game_running; do
-        for entry in \
-            "$CG_FOV_VALUE:$CG_FOV:f32" \
-            "$CG_FOVSCALE_VALUE:$CG_FOVSCALE:f32" \
-            "$COM_MAXFPS_VALUE:$COM_MAXFPS:i32"; do
-            addr="${entry%%:*}"
-            rest="${entry#*:}"
-            target="${rest%%:*}"
-            dtype="${rest#*:}"
-
-            current=$(pika read "$PID" "$addr" -l 4 --json 2>/dev/null | jq -r ".interpretations.${dtype} // empty" 2>/dev/null) || true
-
-            if [[ -n "$current" ]]; then
-                # f32 read back and widened to f64 for JSON rarely round-trips
-                # to the exact decimal typed in (e.g. 1.2 reads back as
-                # 1.2000000476837158), so float dvars compare with a
-                # tolerance instead of exact equality.
-                if [[ "$dtype" == "f32" ]]; then
-                    differs=$(awk -v a="$current" -v b="$target" 'BEGIN { d = a - b; if (d < 0) d = -d; print (d > 0.001) }')
-                else
-                    differs=$(awk -v a="$current" -v b="$target" 'BEGIN { print (a != b) }')
-                fi
-
-                if [[ "$differs" -eq 1 ]]; then
-                    debug "$addr drifted ($current -> $target), rewriting"
-                    pika write --dtype "$dtype" "$PID" "$addr" "$target" >/dev/null
-                fi
-            fi
-        done
-
-        sleep 0.25
-    done
-}
-
-pika write --dtype f32 "$PID" "$CG_FOV_VALUE" "$CG_FOV"
-pika write --dtype f32 "$PID" "$CG_FOVSCALE_VALUE" "$CG_FOVSCALE"
-pika write --dtype i32 "$PID" "$COM_MAXFPS_VALUE" "$COM_MAXFPS"
-
-correct_dvars &
-CORRECTOR_PID=$!
+pika freeze --dtype f32 --interval 250 "$PID" "$CG_FOV_VALUE" "$CG_FOV"
+FROZEN_ADDRS+=("$CG_FOV_VALUE")
+pika freeze --dtype f32 --interval 250 "$PID" "$CG_FOVSCALE_VALUE" "$CG_FOVSCALE"
+FROZEN_ADDRS+=("$CG_FOVSCALE_VALUE")
+pika freeze --dtype i32 --interval 250 "$PID" "$COM_MAXFPS_VALUE" "$COM_MAXFPS"
+FROZEN_ADDRS+=("$COM_MAXFPS_VALUE")
 
 log "Set cg_fov      = $CG_FOV at $CG_FOV_VALUE"
 log "Set cg_fovScale = $CG_FOVSCALE at $CG_FOVSCALE_VALUE"

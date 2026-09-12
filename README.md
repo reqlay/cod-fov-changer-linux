@@ -45,9 +45,8 @@ Currently works on MW2 (2009) and MW3 (2011). For both single- and multiplayer.
    otherwise pattern-scans the game's memory (see "Dynamic address
    discovery" below) and saves the result for next time - unless
    `--force-config` was passed (see "Saved address config").
-4. Writes all three values once via `pika write`.
-5. Starts a background loop (`correct_dvars`) that polls each value every
-   250ms via `pika read` and only re-writes it if has drifted from the target.
+4. Freezes all three values via `pika freeze`, which rewrites each one
+   every 250ms in the daemon for as long as the game runs.
 
 ## Dynamic address discovery
 
