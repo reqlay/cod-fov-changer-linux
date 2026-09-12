@@ -13,14 +13,14 @@ GAME_EXES="iw4mp.exe iw4sp.exe iw5mp.exe iw5sp.exe"
 
 # Always stderr, not stdout: several functions' stdout is a data channel
 # (mapfile/command substitution reads addresses from it) that a tagged
-# line would corrupt. The "[mw2-fov]" prefix lets --debug's filter exclude noise.
+# line would corrupt. The "[cod-fov]" prefix lets --debug's filter exclude noise.
 log() {
-    echo "[mw2-fov] $*" >&2
+    echo "[cod-fov] $*" >&2
 }
 
 debug() {
     [[ "$DEBUG" -eq 1 ]] || return 0
-    echo "[mw2-fov:debug] $*" >&2
+    echo "[cod-fov:debug] $*" >&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -104,17 +104,17 @@ open_terminal() {
 }
 
 if [[ "$DEBUG" -eq 1 ]]; then
-    DEBUG_LOG="${XDG_RUNTIME_DIR:-/tmp}/mw2-fov-changer-debug.log"
+    DEBUG_LOG="${XDG_RUNTIME_DIR:-/tmp}/cod-fov-changer-debug.log"
     {
         log "DISPLAY=${DISPLAY:-<unset>} WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-<unset>}" \
             "XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-<unset>} XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-<unset>}"
 
-        if [[ ! -t 1 ]]; then
+        if [[ ! -t 1 && $# -gt 0 ]]; then
             DEBUG_TERM_APP=$(pick_terminal) || DEBUG_TERM_APP=""
 
             if [[ -n "$DEBUG_TERM_APP" ]]; then
                 open_terminal "$DEBUG_TERM_APP" \
-                    "tail -f '$DEBUG_LOG' | grep --line-buffered -E '^\[mw2-fov|(WARN|ERROR).*pika'" >>"$DEBUG_LOG" 2>&1
+                    "tail -f '$DEBUG_LOG' | grep --line-buffered -E '^\[cod-fov|(WARN|ERROR).*pika'" >>"$DEBUG_LOG" 2>&1
                 DEBUG_TERM_PID=$!
             else
                 log "No terminal emulator found for --debug; check $DEBUG_LOG manually."
@@ -241,11 +241,11 @@ else
 
     log "Found $GAME_EXE with PID $PID"
 
-    # Sleeping for 5 seconds to let the game finish loading
+    # Sleeping for 5 seconds to let the game finish loading.
     sleep 5
 fi
 
-CONFIG_FILE="${CONFIG_FILE_OVERRIDE:-${XDG_CONFIG_HOME:-$HOME/.config}/mw2-fov-changer.conf}"
+CONFIG_FILE="${CONFIG_FILE_OVERRIDE:-${XDG_CONFIG_HOME:-$HOME/.config}/cod-fov-changer.conf}"
 
 # Config sections are keyed by process name (e.g. "[iw4mp.exe]") so one
 # file can hold addresses for multiple binaries/games without collision.
@@ -330,13 +330,8 @@ config_values_plausible() {
     is_plausible_value com_maxfps "$COM_MAXFPS_VALUE"
 }
 
-# Locates each dvar's address by pattern-scanning memory instead of
-# trusting one tied to a specific build (see AGENTS.md). A dvar's name
-# string can have an unrelated second copy elsewhere in the module
-# (observed for cg_fov and cg_fovScale in iw4sp.exe), so every candidate
-# gets pooled across all name-string matches and disambiguated by value:
-# cg_fov via a calibration probe for its known factory default, the
-# others by plausibility at the value_offset that calibration finds.
+# Locates each dvar's address by pattern-scanning memory 
+# for the name string, then scanning for a pointer to check it's plausability.
 
 name_to_hex() {
     local name="$1" out="" i
@@ -365,8 +360,7 @@ aob_addresses() {
 
 # Prints "<start> <end>" spanning every mapped region backed by the game's
 # own exe file, so scans can exclude a duplicate string/pointer elsewhere in
-# the process (e.g. a separate module only loaded once a level is loaded) —
-# same restriction CoD-FoV-Changers uses (github.com/AgentRev/CoD-FoV-Changers).
+# the process (e.g. a separate module only loaded once a level is loaded)
 game_module_range() {
     pika maps "$PID" --json 2>/dev/null | jq -r --arg exe "$GAME_EXE" '
         [.[] | select((.pathname | ascii_downcase) | endswith($exe | ascii_downcase))]
