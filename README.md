@@ -1,6 +1,6 @@
 # COD FOV Changer
 
-Call of Duty FOV and FPS changer for Linux using [pika](https://github.com/delfianto/pika). 
+Call of Duty FOV and FPS changer for Linux using [pika](https://github.com/delfianto/pika). \
 Currently works on MW2 (2009) and MW3 (2011). For both single- and multiplayer.
 
 ## Requirements
