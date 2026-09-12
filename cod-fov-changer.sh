@@ -116,6 +116,7 @@ fi
 cleanup() {
     local addr
     for addr in "${FROZEN_ADDRS[@]}"; do
+        debug "Unfreezing $addr"
         pika unfreeze "$addr" >/dev/null 2>&1 || true
     done
 
@@ -477,10 +478,13 @@ is_game_running() {
     pika ps 2>/dev/null | awk -v pid="$PID" -v exe="$GAME_EXE" '$1 == pid && $2 == exe { found=1 } END { exit !found }'
 }
 
+debug "Freezing cg_fov=$CG_FOV at $CG_FOV_VALUE (f32, interval 250ms)"
 pika freeze --dtype f32 --interval 250 "$PID" "$CG_FOV_VALUE" "$CG_FOV"
 FROZEN_ADDRS+=("$CG_FOV_VALUE")
+debug "Freezing cg_fovScale=$CG_FOVSCALE at $CG_FOVSCALE_VALUE (f32, interval 250ms)"
 pika freeze --dtype f32 --interval 250 "$PID" "$CG_FOVSCALE_VALUE" "$CG_FOVSCALE"
 FROZEN_ADDRS+=("$CG_FOVSCALE_VALUE")
+debug "Freezing com_maxfps=$COM_MAXFPS at $COM_MAXFPS_VALUE (i32, interval 250ms)"
 pika freeze --dtype i32 --interval 250 "$PID" "$COM_MAXFPS_VALUE" "$COM_MAXFPS"
 FROZEN_ADDRS+=("$COM_MAXFPS_VALUE")
 
