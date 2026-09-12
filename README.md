@@ -24,6 +24,9 @@ Currently works on MW2 (2009) and MW3 (2011). For both single- and multiplayer.
 /path/to/script/cod-fov-changer.sh --fov 90 --fovscale 1.2 --fps 125 %command%
 ```
 
+`--debug` requires `debug.sh` to be present alongside `cod-fov-changer.sh`
+(i.e. a full checkout of this repo, not just the standalone script file).
+
 ### Flags
 
 | Flag                 | Controls        | Default |
