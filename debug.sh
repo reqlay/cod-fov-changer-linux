@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Sourced by cod-fov-changer.sh when --debug is passed. Not meant to run standalone.
 
-# Terminal used for --debug output if stdout isn't a TTY. Picks the first available.
+# Picks the first available terminal for --debug output when stdout isn't a TTY.
 pick_terminal() {
     if [[ -n "${TERMINAL:-}" ]] && command -v "$TERMINAL" >/dev/null 2>&1; then
         echo "$TERMINAL"
@@ -29,14 +29,10 @@ pick_terminal() {
 
 DEBUG_TERM_UNIT=""
 
-# Runs the terminal as a systemd --user service instead of a plain background
-# job: Steam attributes any descendant of the launched wrapper PID to the
-# game (confirmed via its own "Adding process <pid> for gameID" logging), so
-# a plain child here gets tracked as part of the game and can be caught up in
-# Steam's overlay/IPC bookkeeping for it. `systemd-run --user` (no --scope)
-# hands the process to the user's systemd instance as its parent instead,
-# which also sidesteps the LD_LIBRARY_PATH problem below since that manager's
-# environment never inherits Steam's runtime override in the first place.
+# Runs the terminal as a systemd --user service, not a plain background job:
+# Steam's process tracking walks descendants of the launched wrapper PID and
+# attributes them to the game, so a plain child here was getting swept into
+# the game's overlay/IPC bookkeeping too.
 open_terminal() {
     local term="$1" cmd="$2"
     local -a argv
@@ -54,8 +50,9 @@ open_terminal() {
         DEBUG_TERM_UNIT="cod-fov-changer-debug-$$"
         systemd-run --user --unit="$DEBUG_TERM_UNIT" --collect --quiet -- "${argv[@]}"
     else
-        # Fallback for non-systemd setups: stays a child of this script, so
-        # Steam's process scan still attributes it to the game.
+        # On non-systemd setups the terminal stays a child of this script,
+        # so Steam's process scan still attributes it to the game.
+        #
         # LD_LIBRARY_PATH is cleared here: Steam points it at its own bundled
         # runtime libs for the game's benefit, which shadowed a system lib
         # konsole needed and broke its startup.
@@ -89,8 +86,8 @@ start_debug_output() {
     log "Debug log: $DEBUG_LOG"
 }
 
-# Closes whichever form the debug terminal took: a systemd-run unit, or the
-# plain background job from the non-systemd fallback.
+# Stops the systemd-run unit if the terminal used one, otherwise kills the
+# fallback's background job.
 stop_debug_terminal() {
     if [[ -n "$DEBUG_TERM_UNIT" ]]; then
         systemctl --user stop "$DEBUG_TERM_UNIT.service" >/dev/null 2>&1 || true
