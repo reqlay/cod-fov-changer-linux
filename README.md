@@ -53,18 +53,24 @@ Currently works on MW2 (2009) and MW3 (2011). For both single- and multiplayer.
 
 ## Dynamic address discovery
 
-Scans are restricted to memory mapped from the game's own process via `pika maps`.
+Scans start at the game exe's image base (its lowest region in `pika maps`).
+Name strings and pointers must fall inside the image, whose size comes from
+the PE header's `SizeOfImage` (Wine can map only the header page from the exe
+file).
 
 1. AOB-scans process memory for the dvar's ASCII name (e.g. `cg_fov`)
    to find where the name string itself lives.
-2. AOB-scans for an 8-byte pointer value equal to that address, to find
-   the `dvar_t` struct field that references it.
-3. For `cg_fov` only: probes a small offset window from that field for
-   its known default value (`65.0`) to calibrate the byte offset
-   from that field to the dvar's live value - the same struct-layout
-   offset applies to every dvar, so it's derived once and reused.
+2. AOB-scans for a 4-aligned pointer value equal to that address, to find
+   the `dvar_t` struct field that references it. The pointer is 4 or 8
+   bytes depending on whether the exe's PE header says it is 32-bit or 64-bit.
+3. For `cg_fov` only: probes a small offset window from that field, from
+   high to low, for its known default value (`65.0`) in the reset slot. This
+   calibrates the byte offset from that field to the dvar's live value. The
+   same struct-layout offset applies to every dvar, so it's derived once and reused.
 4. Repeats steps 1-2 for `cg_fovScale`/`com_maxfps` and applies the same
-   offset to each.
+   offset to each. A `cg_fovScale` candidate must hold `1.0` in its reset
+   slot (0x20 past the live value). A `com_maxfps` candidate must have a
+   plausible live value.
 
 If discovery fails, it retries every 3 seconds for up to 2 minutes before giving up.
 

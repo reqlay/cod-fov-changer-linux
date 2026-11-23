@@ -9,7 +9,7 @@ COM_MAXFPS="250"
 FORCE_CONFIG=0
 CONFIG_FILE_OVERRIDE=""
 DEBUG=0
-GAME_EXES="iw4mp.exe iw4sp.exe iw5mp.exe iw5sp.exe"
+GAME_EXES="iw4mp.exe iw4sp.exe iw5mp.exe iw5sp.exe BlackOps.exe BlackOpsMP.exe"
 
 # Always stderr, not stdout: several functions' stdout is a data channel
 # (mapfile/command substitution reads addresses from it) that a tagged
@@ -263,12 +263,40 @@ name_to_hex() {
 
 addr_to_le_hex() {
     local addr_dec=$(( $1 )) i byte out=""
-    for ((i = 0; i < 8; i++)); do
+    for ((i = 0; i < PTR_SIZE; i++)); do
         byte=$(( (addr_dec >> (i * 8)) & 0xFF ))
         printf -v hex '%02x' "$byte"
         out+="$hex "
     done
     echo "${out% }"
+}
+
+read_i32() {
+    pika read "$PID" "$(printf '0x%x' $(( $1 )))" -l 4 --json 2>/dev/null | jq -r '.interpretations.i32 // empty'
+}
+
+holds_f32() {
+    local val
+    val=$(pika read "$PID" "$(printf '0x%x' $(( $1 )))" -l 4 --json 2>/dev/null | jq -r '.interpretations.f32 // empty') || return 1
+    [[ -n "$val" ]] && awk -v v="$val" -v e="$2" 'BEGIN { exit !(v == e) }'
+}
+
+# Sets PTR_SIZE from the PE header's Machine field and MODULE_END from its
+# SizeOfImage. Wine can map just the header page from the exe file (seen for
+# BlackOpsMP.exe), so pika maps alone can understate the image's extent.
+read_pe_header() {
+    local pe_offset machine image_size
+    pe_offset=$(read_i32 $(( MODULE_START + 0x3c ))) && [[ -n "$pe_offset" ]] || return 1
+    machine=$(read_i32 $(( MODULE_START + pe_offset + 4 ))) && [[ -n "$machine" ]] || return 1
+    image_size=$(read_i32 $(( MODULE_START + pe_offset + 0x50 ))) && [[ -n "$image_size" ]] || return 1
+
+    case $(( machine & 0xffff )) in
+        $(( 0x14c )))  PTR_SIZE=4 ;;
+        $(( 0x8664 ))) PTR_SIZE=8 ;;
+        *)             return 1 ;;
+    esac
+
+    MODULE_END=$(( MODULE_START + image_size ))
 }
 
 aob_addresses() {
@@ -277,20 +305,20 @@ aob_addresses() {
     jq -r '.addresses[]' <<<"$hits" 2>/dev/null
 }
 
-# Prints "<start> <end>" spanning every mapped region backed by the game's
-# own exe file, so scans can exclude a duplicate string/pointer elsewhere in
-# the process (e.g. a separate module only loaded once a level is loaded)
-game_module_range() {
+# Prints the image base: the lowest mapped region backed by the game's own
+# exe file. Scans are bounded from there so they can exclude a duplicate
+# string/pointer in a different module.
+game_module_start() {
     pika maps "$PID" --json 2>/dev/null | jq -r --arg exe "$GAME_EXE" '
         [.[] | select((.pathname | ascii_downcase) | endswith($exe | ascii_downcase))]
         | select(length > 0)
-        | "\(map(.start) | min) \(map(.end) | max)"
+        | map(.start) | min
     '
 }
 
 # Name string constants live in read-only memory (.rdata/.rodata),
 # which pika's aob scan excludes unless told otherwise. Filtered to
-# MODULE_START/MODULE_END (see game_module_range) to exclude the same
+# MODULE_START/MODULE_END (see read_pe_header) to exclude the same
 # string appearing in a different module.
 find_name_string_candidates() {
     local addr
@@ -299,10 +327,11 @@ find_name_string_candidates() {
     done < <(aob_addresses "$(name_to_hex "$1")" --include-readonly)
 }
 
+# Unaligned hits are byte coincidences, not dvar_t fields.
 find_field_pointers_for() {
     local addr
     while read -r addr; do
-        (( addr >= MODULE_START && addr < MODULE_END )) && echo "$addr"
+        (( addr >= MODULE_START && addr < MODULE_END && addr % 4 == 0 )) && echo "$addr"
     done < <(aob_addresses "$(addr_to_le_hex "$1")")
 }
 
@@ -336,41 +365,42 @@ pool_field_candidates() {
     printf '%s\n' "${all_hits[@]}"
 }
 
-# Picks whichever pooled candidate for $1 has a plausible current value for
-# $2 (the key is_plausible_value expects) at the already-known $3
-# value_offset - cg_fovScale/com_maxfps have no known factory default to
-# calibrate against like cg_fov does, so plausibility is the disambiguator.
+# Picks whichever pooled candidate for $1 matches at the already-known $3
+# value_offset. With $4, a match holds $4 as its reset value (0x20 past the
+# current value). Otherwise a match has a plausible current value for $2.
 resolve_dvar_field() {
-    local name="$1" plausibility_key="$2" value_offset="$3"
-    local -a candidates plausible=()
+    local name="$1" plausibility_key="$2" value_offset="$3" reset_default="${4:-}"
+    local -a candidates matches=()
     local field
 
     mapfile -t candidates < <(pool_field_candidates "$name") || return 1
 
     for field in "${candidates[@]}"; do
-        is_plausible_value "$plausibility_key" "$(printf '0x%x' $(( field + value_offset )))" && plausible+=("$field")
+        if [[ -n "$reset_default" ]]; then
+            holds_f32 $(( field + value_offset + 0x20 )) "$reset_default" && matches+=("$field")
+        else
+            is_plausible_value "$plausibility_key" "$(printf '0x%x' $(( field + value_offset )))" && matches+=("$field")
+        fi
     done
 
-    if [[ "${#plausible[@]}" -ne 1 ]]; then
-        log "Discovery: '$name' has ${#candidates[@]} field candidate(s), ${#plausible[@]} plausible - expected exactly 1."
+    if [[ "${#matches[@]}" -ne 1 ]]; then
+        log "Discovery: '$name' has ${#candidates[@]} field candidate(s), ${#matches[@]} matching - expected exactly 1."
         return 1
     fi
 
-    echo "${plausible[0]}"
+    echo "${matches[0]}"
 }
 
 # Prints "<field_addr> <value_offset>" for whichever candidate matches.
+# Scans high to low so the reset value (0x20 past the current value) wins
+# over an earlier slot that also holds 65.0.
 calibrate_value_offset() {
-    local field off candidate_dec hex_addr val
+    local field off
 
     for field in "$@"; do
-        for off in 0x28 0x2c 0x30 0x34 0x38 0x3c; do
-            candidate_dec=$(( field + off ))
-            printf -v hex_addr '0x%x' "$candidate_dec"
-            val=$(pika read "$PID" "$hex_addr" -l 4 --json 2>/dev/null | jq -r '.interpretations.f32 // empty') || true
-
-            if [[ -n "$val" ]] && awk -v v="$val" 'BEGIN { exit !(v == 65) }'; then
-                debug "calibration: field 0x$(printf %x "$field") + $off = 65.0, value_offset=$(( off - 0x20 ))"
+        for (( off = 0x34 + PTR_SIZE; off >= 0x28; off -= 4 )); do
+            if holds_f32 $(( field + off )) 65; then
+                debug "calibration: field $(printf '0x%x + 0x%x' "$field" "$off") = 65.0, value_offset=$(( off - 0x20 ))"
                 echo "$field $(( off - 0x20 ))"
                 return 0
             fi
@@ -384,11 +414,17 @@ discover_dvar_addresses() {
     local field value_offset fovscale_field maxfps_field
     local -a fov_candidates
 
-    read -r MODULE_START MODULE_END < <(game_module_range) || {
+    MODULE_START=$(game_module_start)
+    [[ -n "$MODULE_START" ]] || {
         log "Discovery: couldn't find $GAME_EXE's own module in memory."
         return 1
     }
-    debug "$GAME_EXE module range: $(printf '0x%x-0x%x' "$MODULE_START" "$MODULE_END")"
+
+    read_pe_header || {
+        log "Discovery: couldn't read $GAME_EXE's PE header."
+        return 1
+    }
+    debug "$GAME_EXE image range: $(printf '0x%x-0x%x' "$MODULE_START" "$MODULE_END"), pointer size: $PTR_SIZE bytes"
 
     mapfile -t fov_candidates < <(pool_field_candidates "cg_fov")
     [[ "${#fov_candidates[@]}" -gt 0 ]] || return 1
@@ -400,7 +436,7 @@ discover_dvar_addresses() {
 
     CG_FOV_VALUE=$(printf '0x%x' $(( field + value_offset )))
 
-    fovscale_field=$(resolve_dvar_field "cg_fovScale" "cg_fovscale" "$value_offset") || return 1
+    fovscale_field=$(resolve_dvar_field "cg_fovScale" "cg_fovscale" "$value_offset" 1) || return 1
     maxfps_field=$(resolve_dvar_field "com_maxfps" "com_maxfps" "$value_offset") || return 1
 
     CG_FOVSCALE_VALUE=$(printf '0x%x' $(( fovscale_field + value_offset )))
